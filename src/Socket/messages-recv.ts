@@ -233,7 +233,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     if (retryCount == 1) {
       try {
         const msgId = await requestPlaceholderResend(msgKey);
-        logger.info(
+        logger.warn(
           `sendRetryRequest: requested placeholder resend for message ${msgId} (scheduled)`
         );
       } catch (error) {

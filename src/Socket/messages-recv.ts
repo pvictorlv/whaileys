@@ -1,6 +1,10 @@
 import { Boom } from "@hapi/boom";
 import { proto } from "../../WAProto";
-import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from "../Defaults";
+import {
+  DEFAULT_CACHE_TTLS,
+  KEY_BUNDLE_TYPE,
+  MIN_PREKEY_COUNT
+} from "../Defaults";
 import {
   MessageReceiptType,
   MessageRelayOptions,
@@ -50,6 +54,7 @@ import {
 import { extractGroupMetadata } from "./groups";
 import { makeMessagesSocket } from "./messages-send";
 import { randomBytes } from "crypto";
+import NodeCache from "node-cache";
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
   const {
@@ -83,6 +88,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
   const msgRetryMap = config.msgRetryCounterMap || {};
   const callOfferData: { [id: string]: WACallEvent } = {};
+
+  const placeholderResendCache = new NodeCache({
+    stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
+    useClones: false
+  });
 
   let sendActiveReceipts = false;
 
@@ -220,7 +230,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
       }
     }
 
-    if (retryCount <= 2) {
+    if (retryCount == 1) {
       const msgId = await requestPlaceholderResend(msgKey);
       logger.debug(
         `sendRetryRequest: requested placeholder resend for message ${msgId} (scheduled)`
@@ -876,6 +886,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
       return;
     }
 
+    let response: string | undefined;
+
+    const encNode = getBinaryNodeChild(node, "enc");
+    if (getBinaryNodeChild(node, "unavailable") && !encNode) {
+      await sendMessageAck(node);
+      const { key } = decodeMessageStanza(node, authState).fullMessage;
+      response = await requestPlaceholderResend(key);
+      if (response === "RESOLVED") {
+        return;
+      }
+
+      logger.debug(
+        "received unavailable message, acked and requested resend from phone"
+      );
+    } else {
+      if (placeholderResendCache.get(node.attrs.id!)) {
+        placeholderResendCache.del(node.attrs.id!);
+      }
+    }
+
     try {
       const {
         fullMessage: msg,
@@ -913,7 +943,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
             );
             retryMutex.mutex(async () => {
               if (ws.readyState === ws.OPEN) {
-                const encNode = getBinaryNodeChild(node, "enc");
                 await sendRetryRequest(node, !encNode, msg.key);
                 if (retryRequestDelayMs) {
                   await delay(retryRequestDelayMs);
@@ -1002,8 +1031,24 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
   const requestPlaceholderResend = async (
     messageKey: WAMessageKey
-  ): Promise<string> => {
-    if (!authState.creds.me?.id) throw new Boom("Not authenticated");
+  ): Promise<string | undefined> => {
+    if (!authState.creds.me?.id) {
+      throw new Boom("Not authenticated");
+    }
+
+    if (placeholderResendCache.get(messageKey?.id!)) {
+      logger.debug({ messageKey }, "already requested resend");
+      return;
+    } else {
+      placeholderResendCache.set(messageKey?.id!, true);
+    }
+
+    await delay(5000);
+
+    if (!placeholderResendCache.get(messageKey?.id!)) {
+      logger.debug({ messageKey }, "message received while resend requested");
+      return "RESOLVED";
+    }
 
     const pdoMessage = {
       placeholderMessageResendRequest: [
@@ -1014,6 +1059,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
       peerDataOperationRequestType:
         proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
     };
+
+    setTimeout(() => {
+      if (placeholderResendCache.get(messageKey?.id!)) {
+        logger.debug(
+          { messageKey },
+          "PDO message without response after 15 seconds. Phone possibly offline"
+        );
+        placeholderResendCache.del(messageKey?.id!);
+      }
+    }, 15_000);
 
     return sendPeerDataOperationMessage(pdoMessage);
   };

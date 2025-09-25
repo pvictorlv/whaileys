@@ -231,10 +231,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     }
 
     if (retryCount == 1) {
-      const msgId = await requestPlaceholderResend(msgKey);
-      logger.debug(
-        `sendRetryRequest: requested placeholder resend for message ${msgId} (scheduled)`
-      );
+      try {
+        const msgId = await requestPlaceholderResend(msgKey);
+        logger.debug(
+          `sendRetryRequest: requested placeholder resend for message ${msgId} (scheduled)`
+        );
+      } catch (error) {
+        logger.warn(
+          { error, msgId },
+          "failed to send scheduled placeholder request"
+        );
+      }
     }
 
     const deviceIdentity = encodeSignedDeviceIdentity(account!, true);

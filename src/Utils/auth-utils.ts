@@ -187,47 +187,57 @@ export const addTransactionCapability = (
     transaction: async function (work, key): Promise<any> {
       const releaseTxMutex = await getTransactionMutex(key).acquire();
 
-      // if we're already in a transaction,
-      // just execute what needs to be executed -- no commit required
-      if (inTransaction) {
-        await work();
-      } else {
-        logger.trace("entering transaction");
-        inTransaction = true;
-        try {
-          await work();
-          if (Object.keys(mutations).length) {
-            logger.trace("committing transaction");
-            // retry mechanism to ensure we've some recovery
-            // in case a transaction fails in the first attempt
-            let tries = maxCommitRetries;
-            while (tries) {
-              tries -= 1;
-              try {
-                await state.set(mutations);
-                logger.trace(
-                  { dbQueriesInTransaction },
-                  "committed transaction"
-                );
-                break;
-              } catch (error) {
-                logger.warn(
-                  `failed to commit ${
-                    Object.keys(mutations).length
-                  } mutations, tries left=${tries}`
-                );
-                await delay(delayBetweenTriesMs);
+      try {
+        // if we're already in a transaction,
+        // just execute what needs to be executed -- no commit required
+        if (inTransaction) {
+          releaseTxMutex();
+          return await work();
+        } else {
+          logger.trace("entering transaction");
+          inTransaction = true;
+          releaseTxMutex();
+          try {
+            const result = await work();
+            if (Object.keys(mutations).length) {
+              logger.trace("committing transaction");
+              // retry mechanism to ensure we've some recovery
+              // in case a transaction fails in the first attempt
+              let tries = maxCommitRetries;
+              while (tries) {
+                tries -= 1;
+                try {
+                  await state.set(mutations);
+                  logger.trace(
+                    { dbQueriesInTransaction },
+                    "committed transaction"
+                  );
+                  break;
+                } catch (error) {
+                  logger.warn(
+                    `failed to commit ${
+                      Object.keys(mutations).length
+                    } mutations, tries left=${tries}`
+                  );
+                  await delay(delayBetweenTriesMs);
+                }
               }
+            } else {
+              logger.trace("no mutations in transaction");
             }
-          } else {
-            logger.trace("no mutations in transaction");
+
+            return result;
+          } finally {
+            inTransaction = false;
+            transactionCache = {};
+            mutations = {};
+            dbQueriesInTransaction = 0;
           }
-        } finally {
-          inTransaction = false;
-          transactionCache = {};
-          mutations = {};
-          dbQueriesInTransaction = 0;
         }
+      } catch (error) {
+        logger.error({ error }, "error in transaction");
+        releaseTxMutex();
+        throw error;
       }
     }
   };

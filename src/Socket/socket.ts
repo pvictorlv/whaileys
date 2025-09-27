@@ -280,7 +280,7 @@ export const makeSocket = ({
       ev.emit("creds.update", update);
 
       logger.info({ count }, "uploaded pre-keys");
-    });
+    }, creds.me?.id || "upload-pre-keys");
   };
 
   const uploadPreKeysToServerIfRequired = async () => {

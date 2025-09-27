@@ -217,7 +217,7 @@ const processMessage = async (
               { newAppStateSyncKeyId, newKeys },
               "injecting new app state sync keys"
             );
-          });
+          }, meId || "app-state-sync");
 
           ev.emit("creds.update", { myAppStateKeyId: newAppStateSyncKeyId });
         } else {

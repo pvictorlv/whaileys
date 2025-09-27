@@ -312,7 +312,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         },
         "sent retry receipt"
       );
-    });
+    }, authState?.creds?.me?.id || "sendRetryRequest");
   };
 
   const handleEncryptNotification = async (node: BinaryNode) => {

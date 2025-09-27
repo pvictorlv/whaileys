@@ -175,6 +175,8 @@ export const addTransactionCapability = (
         for (const key in data) {
           const mutex = getKeyTypeMutex(key);
           const keyType = key as keyof SignalDataTypeMap;
+          transactionCache[key] = transactionCache[key] || {};
+
           if (key === "pre-key") {
             await mutex.runExclusive(async () => {
               const keyData = data[keyType];
@@ -248,9 +250,7 @@ export const addTransactionCapability = (
               }
             });
           } else {
-            transactionCache[key] = transactionCache[key] || {};
             Object.assign(transactionCache[key], data[key]);
-
             mutations[key] = mutations[key] || {};
             Object.assign(mutations[key], data[key]);
           }

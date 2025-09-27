@@ -184,7 +184,7 @@ export const addTransactionCapability = (
       }
     },
     isInTransaction: () => inTransaction,
-    transaction: async function (work, key): Promise<any> {
+    transaction: async function (work, key) {
       const releaseTxMutex = await getTransactionMutex(key).acquire();
 
       try {

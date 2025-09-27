@@ -230,7 +230,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
       }
     }
 
-    if (retryCount == 1) {
+    if (retryCount <= 1) {
       try {
         const msgId = await requestPlaceholderResend(msgKey);
         logger.warn(

@@ -12,6 +12,8 @@ import type {
 import { Curve, signedKeyPair } from "./crypto";
 import { delay, generateRegistrationId } from "./generics";
 import { DEFAULT_CACHE_TTLS } from "../Defaults";
+import { LRUCache } from "lru-cache";
+import { Mutex } from "async-mutex";
 
 /**
  * Adds caching capability to a SignalKeyStore
@@ -103,6 +105,12 @@ export const addTransactionCapability = (
   let dbQueriesInTransaction = 0;
   let transactionCache: SignalDataSet = {};
   let mutations: SignalDataSet = {};
+  // LRU Cache to hold mutexes for different key types
+  const mutexCache = new LRUCache<string, Mutex>({
+    ttl: 60 * 60 * 1000, // 1 hour
+    ttlAutopurge: true,
+    updateAgeOnGet: true
+  });
 
   /**
    * prefetches some data and stores in memory,
@@ -123,38 +131,138 @@ export const addTransactionCapability = (
     }
   };
 
+  function getMutex(key: string): Mutex {
+    let mutex = mutexCache.get(key);
+    if (!mutex) {
+      mutex = new Mutex();
+      mutexCache.set(key, mutex);
+      logger.info({ key }, "created new mutex");
+    }
+
+    return mutex;
+  }
+
+  function getTransactionMutex(key: string): Mutex {
+    return getMutex(`transaction:${key}`);
+  }
+
+  function getKeyTypeMutex(type: string): Mutex {
+    return getMutex(`keytype:${type}`);
+  }
+
   return {
     get: async (type, ids) => {
       if (inTransaction) {
-        await prefetch(type, ids);
-        return ids.reduce((dict, id) => {
-          const value = transactionCache[type]?.[id];
-          if (value) {
-            dict[id] = value;
-          }
-
-          return dict;
-        }, {});
+        return await getKeyTypeMutex(type as string).runExclusive(async () => {
+          await prefetch(type, ids);
+          return ids.reduce((dict, id) => {
+            const value = transactionCache[type]?.[id];
+            if (value) {
+              dict[id] = value;
+            }
+            return dict;
+          }, {});
+        });
       } else {
-        return state.get(type, ids);
+        return await getKeyTypeMutex(type as string).runExclusive(() =>
+          state.get(type, ids)
+        );
       }
     },
-    set: data => {
+    set: async data => {
       if (inTransaction) {
         logger.trace({ types: Object.keys(data) }, "caching in transaction");
         for (const key in data) {
-          transactionCache[key] = transactionCache[key] || {};
-          Object.assign(transactionCache[key], data[key]);
+          const mutex = getKeyTypeMutex(key);
+          const keyType = key as keyof SignalDataTypeMap;
+          if (key === "pre-key") {
+            await mutex.runExclusive(async () => {
+              const keyData = data[keyType];
+              if (!keyData) return;
 
-          mutations[key] = mutations[key] || {};
-          Object.assign(mutations[key], data[key]);
+              // Ensure structures exist
+              transactionCache[keyType] =
+                transactionCache[keyType] || ({} as any);
+              mutations[keyType] = mutations[keyType] || ({} as any);
+
+              // Separate deletions from updates for batch processing
+              const deletionKeys: string[] = [];
+              const updateKeys: string[] = [];
+
+              for (const keyId in keyData) {
+                if (keyData[keyId] === null) {
+                  deletionKeys.push(keyId);
+                } else {
+                  updateKeys.push(keyId);
+                }
+              }
+
+              // Process updates first (no validation needed)
+              for (const keyId of updateKeys) {
+                if (transactionCache[keyType]) {
+                  transactionCache[keyType]![keyId] = keyData[keyId]!;
+                }
+
+                if (mutations[keyType]) {
+                  mutations[keyType]![keyId] = keyData[keyId]!;
+                }
+              }
+
+              // Process deletions with validation
+              if (deletionKeys.length === 0) return;
+
+              if (inTransaction) {
+                // In transaction, only allow deletion if key exists in cache
+                for (const keyId of deletionKeys) {
+                  if (transactionCache[keyType]) {
+                    transactionCache[keyType]![keyId] = null;
+                    if (mutations[keyType]) {
+                      // Mark for deletion in mutations
+                      mutations[keyType]![keyId] = null;
+                    }
+                  } else {
+                    logger.warn(
+                      `Skipping deletion of non-existent ${keyType} in transaction: ${keyId}`
+                    );
+                  }
+                }
+
+                return;
+              }
+
+              // Outside transaction, batch validate all deletions
+              if (!state) return;
+
+              const existingKeys = await state.get(keyType, deletionKeys);
+              for (const keyId of deletionKeys) {
+                if (existingKeys[keyId]) {
+                  if (transactionCache[keyType])
+                    transactionCache[keyType]![keyId] = null;
+
+                  if (mutations[keyType]) mutations[keyType]![keyId] = null;
+                } else {
+                  logger.warn(
+                    `Skipping deletion of non-existent ${keyType}: ${keyId}`
+                  );
+                }
+              }
+            });
+          } else {
+            transactionCache[key] = transactionCache[key] || {};
+            Object.assign(transactionCache[key], data[key]);
+
+            mutations[key] = mutations[key] || {};
+            Object.assign(mutations[key], data[key]);
+          }
         }
       } else {
         return state.set(data);
       }
     },
     isInTransaction: () => inTransaction,
-    transaction: async work => {
+    transaction: async function (work, key): Promise<any> {
+      const releaseTxMutex = await getTransactionMutex(key).acquire();
+
       // if we're already in a transaction,
       // just execute what needs to be executed -- no commit required
       if (inTransaction) {

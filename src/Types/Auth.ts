@@ -95,7 +95,7 @@ export type SignalKeyStore = {
 
 export type SignalKeyStoreWithTransaction = SignalKeyStore & {
   isInTransaction: () => boolean;
-  transaction(exec: () => Promise<void>): Promise<void>;
+  transaction<T>(exec: () => Promise<T>, key: string): Promise<T>;
 };
 
 export type TransactionCapabilityOptions = {

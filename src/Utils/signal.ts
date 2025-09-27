@@ -16,6 +16,7 @@ import {
   SignalAuthState,
   SignalIdentity,
   SignalKeyStore,
+  SignalKeyStoreWithTransaction,
   SignedKeyPair
 } from "../Types/Auth";
 import {
@@ -190,10 +191,14 @@ export const decryptGroupSignalProto = (
   msg: Buffer | Uint8Array,
   auth: SignalAuthState
 ) => {
-  const senderName = jidToSignalSenderKeyName(group, user);
-  const cipher = new GroupCipher(signalStorage(auth), senderName);
+  const parsedKeys = auth.keys as SignalKeyStoreWithTransaction;
 
-  return cipher.decrypt(Buffer.from(msg));
+  return parsedKeys.transaction(async () => {
+    const senderName = jidToSignalSenderKeyName(group, user);
+    const cipher = new GroupCipher(signalStorage(auth), senderName);
+
+    return cipher.decrypt(Buffer.from(msg));
+  }, group);
 };
 
 export const processSenderKeyMessage = async (
@@ -211,15 +216,19 @@ export const processSenderKeyMessage = async (
     null,
     item.axolotlSenderKeyDistributionMessage
   );
-  const { [senderName]: senderKey } = await auth.keys.get("sender-key", [
-    senderName
-  ]);
-  if (!senderKey) {
-    const record = new SenderKeyRecord();
-    await auth.keys.set({ "sender-key": { [senderName]: record } });
-  }
+  const parsedKeys = auth.keys as SignalKeyStoreWithTransaction;
 
-  await builder.process(senderName, senderMsg);
+  return parsedKeys.transaction(async () => {
+    const { [senderName]: senderKey } = await auth.keys.get("sender-key", [
+      senderName
+    ]);
+    if (!senderKey) {
+      const record = new SenderKeyRecord();
+      await auth.keys.set({ "sender-key": { [senderName]: record } });
+    }
+
+    await builder.process(senderName, senderMsg);
+  }, item.groupId!);
 };
 
 export const decryptSignalProto = async (
@@ -228,19 +237,43 @@ export const decryptSignalProto = async (
   msg: Buffer | Uint8Array,
   auth: SignalAuthState
 ) => {
-  const addr = jidToSignalProtocolAddress(user);
-  const session = new libsignal.SessionCipher(signalStorage(auth), addr);
-  let result: Buffer;
-  switch (type) {
-    case "pkmsg":
-      result = await session.decryptPreKeyWhisperMessage(msg);
-      break;
-    case "msg":
-      result = await session.decryptWhisperMessage(msg);
-      break;
+  function isLikelySyncMessage(addr: libsignal.ProtocolAddress): boolean {
+    const key = addr.toString();
+
+    // Only bypass for WhatsApp system addresses, not regular user contacts
+    // Be very specific about sync service patterns
+    return (
+      key.includes("@lid.whatsapp.net") || // WhatsApp system messages
+      key.includes("@broadcast") || // Broadcast messages
+      key.includes("@newsletter")
+    );
   }
 
-  return result;
+  const addr = jidToSignalProtocolAddress(user);
+  const session = new libsignal.SessionCipher(signalStorage(auth), addr);
+
+  async function doDecrypt() {
+    let result: Buffer;
+    switch (type) {
+      case "pkmsg":
+        result = await session.decryptPreKeyWhisperMessage(msg);
+        break;
+      case "msg":
+        result = await session.decryptWhisperMessage(msg);
+        break;
+    }
+
+    return result;
+  }
+
+  if (isLikelySyncMessage(addr)) {
+    return await doDecrypt();
+  }
+  const parsedKeys = auth.keys as SignalKeyStoreWithTransaction;
+
+  return parsedKeys.transaction(async () => {
+    return await doDecrypt();
+  }, user);
 };
 
 export const encryptSignalProto = async (
@@ -251,9 +284,13 @@ export const encryptSignalProto = async (
   const addr = jidToSignalProtocolAddress(user);
   const cipher = new libsignal.SessionCipher(signalStorage(auth), addr);
 
-  const { type: sigType, body } = await cipher.encrypt(buffer);
-  const type = sigType === 3 ? "pkmsg" : "msg";
-  return { type, ciphertext: Buffer.from(body, "binary") };
+  const parsedKeys = auth.keys as SignalKeyStoreWithTransaction;
+
+  return parsedKeys.transaction(async () => {
+    const { type: sigType, body } = await cipher.encrypt(buffer);
+    const type = sigType === 3 ? "pkmsg" : "msg";
+    return { type, ciphertext: Buffer.from(body, "binary") };
+  }, user);
 };
 
 export const encryptSenderKeyMsgSignalProto = async (
@@ -266,21 +303,25 @@ export const encryptSenderKeyMsgSignalProto = async (
   const senderName = jidToSignalSenderKeyName(group, meId);
   const builder = new GroupSessionBuilder(storage);
 
-  const { [senderName]: senderKey } = await auth.keys.get("sender-key", [
-    senderName
-  ]);
-  if (!senderKey) {
-    const record = new SenderKeyRecord();
-    await auth.keys.set({ "sender-key": { [senderName]: record } });
-  }
+  const parsedKeys = auth.keys as SignalKeyStoreWithTransaction;
 
-  const senderKeyDistributionMessage = await builder.create(senderName);
-  const session = new GroupCipher(storage, senderName);
-  return {
-    ciphertext: (await session.encrypt(data)) as Uint8Array,
-    senderKeyDistributionMessageKey:
-      senderKeyDistributionMessage.serialize() as Buffer
-  };
+  return parsedKeys.transaction(async () => {
+    const { [senderName]: senderKey } = await auth.keys.get("sender-key", [
+      senderName
+    ]);
+    if (!senderKey) {
+      const record = new SenderKeyRecord();
+      await auth.keys.set({ "sender-key": { [senderName]: record } });
+    }
+
+    const senderKeyDistributionMessage = await builder.create(senderName);
+    const session = new GroupCipher(storage, senderName);
+    return {
+      ciphertext: (await session.encrypt(data)) as Uint8Array,
+      senderKeyDistributionMessageKey:
+        senderKeyDistributionMessage.serialize() as Buffer
+    };
+  }, group);
 };
 
 export const parseAndInjectE2ESessions = async (
@@ -302,6 +343,8 @@ export const parseAndInjectE2ESessions = async (
     assertNodeErrorFree(node);
   }
 
+  const parsedKeys = auth.keys as SignalKeyStoreWithTransaction;
+
   const chunkSize = 100;
   const chunks = chunk(nodes, chunkSize);
 
@@ -314,17 +357,19 @@ export const parseAndInjectE2ESessions = async (
         const jid = node.attrs.jid;
         const registrationId = getBinaryNodeChildUInt(node, "registration", 4);
 
-        const device = {
-          registrationId,
-          identityKey: generateSignalPubKey(identity),
-          signedPreKey: extractKey(signedKey),
-          preKey: extractKey(key)
-        };
-        const cipher = new libsignal.SessionBuilder(
-          signalStorage(auth),
-          jidToSignalProtocolAddress(jid)
-        );
-        await cipher.initOutgoing(device);
+        return parsedKeys.transaction(async () => {
+          const device = {
+            registrationId,
+            identityKey: generateSignalPubKey(identity),
+            signedPreKey: extractKey(signedKey),
+            preKey: extractKey(key)
+          };
+          const cipher = new libsignal.SessionBuilder(
+            signalStorage(auth),
+            jidToSignalProtocolAddress(jid)
+          );
+          await cipher.initOutgoing(device);
+        }, jid);
       })
     );
   }
@@ -372,28 +417,32 @@ export const getNextPreKeys = async (
   { creds, keys }: AuthenticationState,
   count: number
 ) => {
-  const { newPreKeys, lastPreKeyId, preKeysRange } = generateOrGetPreKeys(
-    creds,
-    count
-  );
+  const parsedKeys = keys as SignalKeyStoreWithTransaction;
 
-  const update: Partial<AuthenticationCreds> = {
-    nextPreKeyId: Math.max(lastPreKeyId + 1, creds.nextPreKeyId),
-    firstUnuploadedPreKeyId: Math.max(
-      creds.firstUnuploadedPreKeyId,
-      lastPreKeyId + 1
-    )
-  };
+  return parsedKeys.transaction(async () => {
+    const { newPreKeys, lastPreKeyId, preKeysRange } = generateOrGetPreKeys(
+      creds,
+      count
+    );
 
-  await keys.set({ "pre-key": newPreKeys });
+    const update: Partial<AuthenticationCreds> = {
+      nextPreKeyId: Math.max(lastPreKeyId + 1, creds.nextPreKeyId),
+      firstUnuploadedPreKeyId: Math.max(
+        creds.firstUnuploadedPreKeyId,
+        lastPreKeyId + 1
+      )
+    };
 
-  const preKeys = await getPreKeys(
-    keys,
-    preKeysRange[0],
-    preKeysRange[0] + preKeysRange[1]
-  );
+    await keys.set({ "pre-key": newPreKeys });
 
-  return { update, preKeys };
+    const preKeys = await getPreKeys(
+      keys,
+      preKeysRange[0],
+      preKeysRange[0] + preKeysRange[1]
+    );
+
+    return { update, preKeys };
+  }, creds.me?.id || "pre-keys");
 };
 
 export const getNextPreKeysNode = async (

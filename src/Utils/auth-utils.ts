@@ -173,87 +173,11 @@ export const addTransactionCapability = (
       if (inTransaction) {
         logger.trace({ types: Object.keys(data) }, "caching in transaction");
         for (const key in data) {
-          const mutex = getKeyTypeMutex(key);
-          const keyType = key as keyof SignalDataTypeMap;
           transactionCache[key] = transactionCache[key] || {};
+          Object.assign(transactionCache[key], data[key]);
 
-          if (key === "pre-key") {
-            await mutex.runExclusive(async () => {
-              const keyData = data[keyType];
-              if (!keyData) return;
-
-              // Ensure structures exist
-              transactionCache[keyType] =
-                transactionCache[keyType] || ({} as any);
-              mutations[keyType] = mutations[keyType] || ({} as any);
-
-              // Separate deletions from updates for batch processing
-              const deletionKeys: string[] = [];
-              const updateKeys: string[] = [];
-
-              for (const keyId in keyData) {
-                if (keyData[keyId] === null) {
-                  deletionKeys.push(keyId);
-                } else {
-                  updateKeys.push(keyId);
-                }
-              }
-
-              // Process updates first (no validation needed)
-              for (const keyId of updateKeys) {
-                if (transactionCache[keyType]) {
-                  transactionCache[keyType]![keyId] = keyData[keyId]!;
-                }
-
-                if (mutations[keyType]) {
-                  mutations[keyType]![keyId] = keyData[keyId]!;
-                }
-              }
-
-              // Process deletions with validation
-              if (deletionKeys.length === 0) return;
-
-              if (inTransaction) {
-                // In transaction, only allow deletion if key exists in cache
-                for (const keyId of deletionKeys) {
-                  if (transactionCache[keyType]) {
-                    transactionCache[keyType]![keyId] = null;
-                    if (mutations[keyType]) {
-                      // Mark for deletion in mutations
-                      mutations[keyType]![keyId] = null;
-                    }
-                  } else {
-                    logger.warn(
-                      `Skipping deletion of non-existent ${keyType} in transaction: ${keyId}`
-                    );
-                  }
-                }
-
-                return;
-              }
-
-              // Outside transaction, batch validate all deletions
-              if (!state) return;
-
-              const existingKeys = await state.get(keyType, deletionKeys);
-              for (const keyId of deletionKeys) {
-                if (existingKeys[keyId]) {
-                  if (transactionCache[keyType])
-                    transactionCache[keyType]![keyId] = null;
-
-                  if (mutations[keyType]) mutations[keyType]![keyId] = null;
-                } else {
-                  logger.warn(
-                    `Skipping deletion of non-existent ${keyType}: ${keyId}`
-                  );
-                }
-              }
-            });
-          } else {
-            Object.assign(transactionCache[key], data[key]);
-            mutations[key] = mutations[key] || {};
-            Object.assign(mutations[key], data[key]);
-          }
+          mutations[key] = mutations[key] || {};
+          Object.assign(mutations[key], data[key]);
         }
       } else {
         return state.set(data);

@@ -150,6 +150,126 @@ export const addTransactionCapability = (
     return getMutex(`keytype:${type}`);
   }
 
+  async function handlePreKeyOperations(
+    data: SignalDataSet,
+    keyType: keyof SignalDataTypeMap,
+    transactionCache: SignalDataSet,
+    mutations: SignalDataSet,
+    isInTransaction: boolean,
+    state?: SignalKeyStore
+  ): Promise<void> {
+    const mutex = getKeyTypeMutex(keyType);
+
+    await mutex.runExclusive(async () => {
+      const keyData = data[keyType];
+      if (!keyData) return;
+
+      // Ensure structures exist
+      transactionCache[keyType] = transactionCache[keyType] || ({} as any);
+      mutations[keyType] = mutations[keyType] || ({} as any);
+
+      // Separate deletions from updates for batch processing
+      const deletionKeys: string[] = [];
+      const updateKeys: string[] = [];
+
+      for (const keyId in keyData) {
+        if (keyData[keyId] === null) {
+          deletionKeys.push(keyId);
+        } else {
+          updateKeys.push(keyId);
+        }
+      }
+
+      // Process updates first (no validation needed)
+      for (const keyId of updateKeys) {
+        if (transactionCache[keyType]) {
+          transactionCache[keyType]![keyId] = keyData[keyId]!;
+        }
+
+        if (mutations[keyType]) {
+          mutations[keyType]![keyId] = keyData[keyId]!;
+        }
+      }
+
+      // Process deletions with validation
+      if (deletionKeys.length === 0) return;
+
+      if (isInTransaction) {
+        // In transaction, only allow deletion if key exists in cache
+        for (const keyId of deletionKeys) {
+          if (transactionCache[keyType]) {
+            transactionCache[keyType]![keyId] = null;
+            if (mutations[keyType]) {
+              // Mark for deletion in mutations
+              mutations[keyType]![keyId] = null;
+            }
+          } else {
+            logger.warn(
+              `Skipping deletion of non-existent ${keyType} in transaction: ${keyId}`
+            );
+          }
+        }
+
+        return;
+      }
+
+      // Outside transaction, batch validate all deletions
+      if (!state) return;
+
+      const existingKeys = await state.get(keyType, deletionKeys);
+      for (const keyId of deletionKeys) {
+        if (existingKeys[keyId]) {
+          if (transactionCache[keyType])
+            transactionCache[keyType]![keyId] = null;
+
+          if (mutations[keyType]) mutations[keyType]![keyId] = null;
+        } else {
+          logger.warn(`Skipping deletion of non-existent ${keyType}: ${keyId}`);
+        }
+      }
+    });
+  }
+
+  /**
+   * Executes a function with mutexes acquired for given key types
+   * Uses async-mutex's runExclusive with efficient batching
+   */
+  async function withMutexes<T>(
+    keyTypes: string[],
+    getKeyTypeMutex: (type: string) => Mutex,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    if (keyTypes.length === 0) {
+      return fn();
+    }
+
+    if (keyTypes.length === 1) {
+      return getKeyTypeMutex(keyTypes[0]!).runExclusive(fn);
+    }
+
+    // For multiple mutexes, sort by key type to prevent deadlocks
+    // Then acquire all mutexes in order using Promise.all for better efficiency
+    const sortedKeyTypes = [...keyTypes].sort();
+    const mutexes = sortedKeyTypes.map(getKeyTypeMutex);
+
+    // Acquire all mutexes in order to prevent deadlocks
+    const releases: (() => void)[] = [];
+
+    try {
+      for (const mutex of mutexes) {
+        releases.push(await mutex.acquire());
+      }
+
+      return await fn();
+    } finally {
+      // Release in reverse order
+      while (releases.length > 0) {
+        const release = releases.pop();
+        if (release) release();
+      }
+    }
+  }
+
   return {
     get: async (type, ids) => {
       if (inTransaction) {
@@ -174,13 +294,26 @@ export const addTransactionCapability = (
         logger.trace({ types: Object.keys(data) }, "caching in transaction");
         for (const key in data) {
           transactionCache[key] = transactionCache[key] || {};
-          Object.assign(transactionCache[key], data[key]);
+          if (key === "pre-key") {
+            await handlePreKeyOperations(
+              data,
+              key,
+              transactionCache,
+              mutations,
+              true
+            );
+          } else {
+            Object.assign(transactionCache[key], data[key]);
 
-          mutations[key] = mutations[key] || {};
-          Object.assign(mutations[key], data[key]);
+            mutations[key] = mutations[key] || {};
+            Object.assign(mutations[key], data[key]);
+          }
         }
       } else {
-        return state.set(data);
+        await withMutexes(Object.keys(data), getKeyTypeMutex, async () => {
+          // Apply changes to the store
+          await state.set(data);
+        });
       }
     },
     isInTransaction: () => inTransaction,

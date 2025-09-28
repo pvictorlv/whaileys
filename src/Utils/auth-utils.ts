@@ -34,51 +34,57 @@ export function makeCacheableSignalKeyStore(
       deleteOnExpire: true
     });
 
+  const cacheMutex = new Mutex();
+
   function getUniqueId(type: string, id: string) {
     return `${type}.${id}`;
   }
 
   return {
     async get(type, ids) {
-      const data: { [_: string]: SignalDataTypeMap[typeof type] } = {};
-      const idsToFetch: string[] = [];
-      for (const id of ids) {
-        const item = cache.get<SignalDataTypeMap[typeof type]>(
-          getUniqueId(type, id)
-        );
-        if (typeof item !== "undefined") {
-          data[id] = item;
-        } else {
-          idsToFetch.push(id);
-        }
-      }
-
-      if (idsToFetch.length) {
-        logger.trace({ items: idsToFetch.length }, "loading from store");
-        const fetched = await store.get(type, idsToFetch);
-        for (const id of idsToFetch) {
-          const item = fetched[id];
-          if (item) {
+      return cacheMutex.runExclusive(async () => {
+        const data: { [_: string]: SignalDataTypeMap[typeof type] } = {};
+        const idsToFetch: string[] = [];
+        for (const id of ids) {
+          const item = cache.get<SignalDataTypeMap[typeof type]>(
+            getUniqueId(type, id)
+          );
+          if (typeof item !== "undefined") {
             data[id] = item;
-            cache.set(getUniqueId(type, id), item);
+          } else {
+            idsToFetch.push(id);
           }
         }
-      }
 
-      return data;
+        if (idsToFetch.length) {
+          logger.trace({ items: idsToFetch.length }, "loading from store");
+          const fetched = await store.get(type, idsToFetch);
+          for (const id of idsToFetch) {
+            const item = fetched[id];
+            if (item) {
+              data[id] = item;
+              cache.set(getUniqueId(type, id), item);
+            }
+          }
+        }
+
+        return data;
+      });
     },
     async set(data) {
-      let keys = 0;
-      for (const type in data) {
-        for (const id in data[type]) {
-          cache.set(getUniqueId(type, id), data[type][id]);
-          keys += 1;
+      return cacheMutex.runExclusive(async () => {
+        let keys = 0;
+        for (const type in data) {
+          for (const id in data[type]) {
+            cache.set(getUniqueId(type, id), data[type][id]);
+            keys += 1;
+          }
         }
-      }
 
-      logger.trace({ keys }, "updated cache");
+        logger.trace({ keys }, "updated cache");
 
-      await store.set(data);
+        await store.set(data);
+      });
     },
     async clear() {
       cache.flushAll();

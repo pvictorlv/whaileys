@@ -96,7 +96,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
   let sendActiveReceipts = false;
 
-  const sendMessageAck = async ({ tag, attrs, content }: BinaryNode) => {
+  const sendMessageAck = async (
+    { tag, attrs, content }: BinaryNode,
+    errorCode?: number
+  ) => {
     const stanza: BinaryNode = {
       tag: "ack",
       attrs: {
@@ -105,6 +108,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         class: tag
       }
     };
+
+    if (!!errorCode) {
+      stanza.attrs.error = errorCode.toString();
+    }
 
     if (!!attrs.participant) {
       stanza.attrs.participant = attrs.participant;
@@ -755,7 +762,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
     if (shouldIgnoreJid(remoteJid) && remoteJid !== "@s.whatsapp.net") {
       logger.debug({ remoteJid }, "ignoring receipt from jid");
-      await sendMessageAck(node);
+      await sendMessageAck(node, 500);
       return;
     }
 
@@ -948,6 +955,13 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
               { key: msg.key, params: msg.messageStubParameters },
               "failure in decrypting message"
             );
+            if (
+              msg?.messageStubParameters?.[0] ===
+              "Key used already or never filled"
+            ) {
+              return sendMessageAck(node, 487);
+            }
+
             retryMutex.mutex(async () => {
               if (ws.readyState === ws.OPEN) {
                 await sendRetryRequest(node, !encNode, msg.key);
@@ -993,12 +1007,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
           cleanMessage(msg, authState.creds.me!.id);
 
-
           await upsertMessage(msg, node.attrs.offline ? "append" : "notify");
         })
       ]);
-    } finally {
-      await sendMessageAck(node);
+    } catch (error) {
+      logger.error({ error, node }, "failed to process message");
     }
   };
 

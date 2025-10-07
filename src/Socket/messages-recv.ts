@@ -96,7 +96,65 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
   let sendActiveReceipts = false;
 
-  const sendMessageAck = async (
+  // ACK Burst Control Configuration
+  const ackQueue = new Map<
+    string,
+    {
+      node: BinaryNode;
+      errorCode?: number;
+      timestamp: number;
+    }
+  >();
+  const ackBurstConfig = {
+    maxBurstSize: 15, // Máximo de ACKs por burst
+    burstInterval: 1000, // Intervalo entre bursts (ms)
+    maxQueueSize: 500 // Tamanho máximo da fila
+  };
+  let ackProcessingTimer: NodeJS.Timeout | null = null;
+
+  const processAckQueue = async () => {
+    if (ackQueue.size === 0) {
+      ackProcessingTimer = null;
+      return;
+    }
+
+    const batch: Array<
+      [string, { node: BinaryNode; errorCode?: number; timestamp: number }]
+    > = [];
+    const entries = Array.from(ackQueue.entries());
+
+    // Pegar até maxBurstSize ACKs
+    for (
+      let i = 0;
+      i < Math.min(ackBurstConfig.maxBurstSize, entries.length);
+      i++
+    ) {
+      batch.push(entries[i]);
+    }
+
+    // Processar batch
+    for (const [key, data] of batch) {
+      try {
+        await sendMessageAckImmediate(data.node, data.errorCode);
+        ackQueue.delete(key);
+      } catch (error) {
+        logger.error({ error, key }, "failed to send ack");
+        // Manter na fila para retry
+      }
+    }
+
+    // Agendar próximo processamento
+    if (ackQueue.size > 0) {
+      ackProcessingTimer = setTimeout(
+        processAckQueue,
+        ackBurstConfig.burstInterval
+      );
+    } else {
+      ackProcessingTimer = null;
+    }
+  };
+
+  const sendMessageAckImmediate = async (
     { tag, attrs, content }: BinaryNode,
     errorCode?: number
   ) => {
@@ -138,6 +196,38 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
     logger.debug({ recv: { tag, attrs }, sent: stanza.attrs }, "sent ack");
     await sendNode(stanza);
+  };
+
+  const sendMessageAck = async (
+    { tag, attrs, content }: BinaryNode,
+    errorCode?: number
+  ) => {
+    const node: BinaryNode = { tag, attrs, content };
+    const key = `${attrs.id}_${attrs.from}`;
+
+    // Verificar se a fila está cheia
+    if (ackQueue.size >= ackBurstConfig.maxQueueSize) {
+      logger.warn(
+        { queueSize: ackQueue.size },
+        "ack queue full, sending immediate"
+      );
+      return sendMessageAckImmediate(node, errorCode);
+    }
+
+    // Adicionar à fila
+    ackQueue.set(key, {
+      node,
+      errorCode,
+      timestamp: Date.now()
+    });
+
+    // Iniciar processamento se não estiver rodando
+    if (!ackProcessingTimer) {
+      ackProcessingTimer = setTimeout(
+        processAckQueue,
+        ackBurstConfig.burstInterval
+      );
+    }
   };
 
   const rejectCall = async (callId: string, callFrom: string) => {

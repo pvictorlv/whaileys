@@ -40,12 +40,14 @@ export const PROCESSABLE_HISTORY_TYPES = [
   proto.Message.HistorySyncNotification.HistorySyncType.PUSH_NAME,
   proto.Message.HistorySyncNotification.HistorySyncType.RECENT,
   proto.Message.HistorySyncNotification.HistorySyncType.FULL,
-  proto.Message.HistorySyncNotification.HistorySyncType.ON_DEMAND
+  proto.Message.HistorySyncNotification.HistorySyncType.ON_DEMAND,
+  proto.Message.HistorySyncNotification.HistorySyncType.NON_BLOCKING_DATA,
+  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_STATUS_V3
 ];
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
   version: version as any,
-  browser: Browsers.baileys("Chrome"),
+  browser: Browsers.macOS("Chrome"),
   waWebSocketUrl: "wss://web.whatsapp.com/ws/chat",
   connectTimeoutMs: 20_000,
   keepAliveIntervalMs: 15_000,
@@ -109,4 +111,4 @@ export const MEDIA_KEYS = Object.keys(MEDIA_PATH_MAP) as MediaType[];
 
 export const MIN_PREKEY_COUNT = 5;
 
-export const INITIAL_PREKEY_COUNT = 30;
+export const INITIAL_PREKEY_COUNT = 812;

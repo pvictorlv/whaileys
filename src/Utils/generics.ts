@@ -283,7 +283,7 @@ export const fetchLatestBaileysVersion = async (
   options: AxiosRequestConfig<any> = {}
 ) => {
   const URL =
-    "https://raw.githubusercontent.com/pvictorlv/whaileys/master/src/Defaults/baileys-version.json";
+    "https://raw.githubusercontent.com/pvictorlv/whaileys/stable/src/Defaults/baileys-version.json";
   try {
     const result = await axios.get<{ version: WAVersion }>(URL, {
       ...options,
@@ -306,20 +306,48 @@ export const fetchLatestBaileysVersion = async (
  * A utility that fetches the latest web version of whatsapp.
  * Use to ensure your WA connection is always on the latest version
  */
-export const fetchLatestWaWebVersion = async (
-  options: AxiosRequestConfig<any>
-) => {
+export const fetchLatestWaWebVersion = async (options: RequestInit = {}) => {
   try {
-    const result = await axios.get(
-      "https://web.whatsapp.com/check-update?version=1&platform=web",
-      {
-        ...options,
-        responseType: "json"
-      }
-    );
-    const version = result.data.currentVersion.split(".");
+    // Absolute minimal headers required to bypass anti-bot detection
+    const defaultHeaders = {
+      "sec-fetch-site": "none",
+      "user-agent":
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    };
+
+    const headers = { ...defaultHeaders, ...options.headers };
+
+    const response = await fetch("https://web.whatsapp.com/sw.js", {
+      ...options,
+      method: "GET",
+      headers
+    });
+
+    if (!response.ok) {
+      throw new Boom(`Failed to fetch sw.js: ${response.statusText}`, {
+        statusCode: response.status
+      });
+    }
+
+    const data = await response.text();
+
+    const regex = /\\?"client_revision\\?":\s*(\d+)/;
+    const match = data.match(regex);
+
+    if (!match?.[1]) {
+      return {
+        version: baileysVersion as WAVersion,
+        isLatest: false,
+        error: {
+          message: "Could not find client revision in the fetched content"
+        }
+      };
+    }
+
+    const clientRevision = match[1];
+
     return {
-      version: [+version[0], +version[1], +version[2]] as WAVersion,
+      version: [2, 3000, +clientRevision] as WAVersion,
       isLatest: true
     };
   } catch (error) {

@@ -50,6 +50,7 @@ import {
 } from "../WABinary";
 import { makeGroupsSocket } from "./groups";
 import { MessageRetryManager } from "../Utils/message-retry-manager";
+import { isLidUser } from "../../lib";
 
 export const makeMessagesSocket = (config: SocketConfig) => {
   const {
@@ -410,6 +411,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
     const isGroup = server === "g.us";
     const isStatus = jid === statusJid;
     const isLid = server === "lid";
+    const isGroupOrStatus = isGroup || isStatus;
 
     msgId = msgId || generateMessageIDV2(sock.user?.id);
     useUserDevicesCache = useUserDevicesCache !== false;
@@ -440,7 +442,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
     }
 
     await authState.keys.transaction(async () => {
-      if (isGroup || isStatus) {
+      if (isGroupOrStatus && !isRetryResend) {
         const [groupData, senderKeyMap] = await Promise.all([
           (async () => {
             let groupData = groupMetadataCache?.get(jid) as
@@ -472,35 +474,33 @@ export const makeMessagesSocket = (config: SocketConfig) => {
           })()
         ]);
 
-        if (!participant) {
-          const participantsList = groupData
-            ? groupData.participants.map(p => p.id)
-            : [];
+        const participantsList = groupData
+          ? groupData.participants.map(p => p.id)
+          : [];
 
-          if (groupData?.ephemeralDuration) {
-            additionalAttributes = {
-              ...additionalAttributes,
-              expiration: groupData.ephemeralDuration.toString()
-            };
-          }
+        if (groupData?.ephemeralDuration) {
+          additionalAttributes = {
+            ...additionalAttributes,
+            expiration: groupData.ephemeralDuration.toString()
+          };
+        }
 
-          if (isGroup) {
-            additionalAttributes = {
-              ...additionalAttributes,
-              addressing_mode: groupData?.addressingMode || "pn"
-            };
-          }
+        if (isStatus && statusJidList) {
+          participantsList.push(...statusJidList);
+        }
 
-          if (isStatus && statusJidList) {
-            participantsList.push(...statusJidList);
-          }
+        const additionalDevices = await getUSyncDevices(
+          participantsList,
+          !!useUserDevicesCache,
+          false
+        );
+        devices.push(...additionalDevices);
 
-          const additionalDevices = await getUSyncDevices(
-            participantsList,
-            !!useUserDevicesCache,
-            false
-          );
-          devices.push(...additionalDevices);
+        if (isGroup) {
+          additionalAttributes = {
+            ...additionalAttributes,
+            addressing_mode: groupData?.addressingMode || "pn"
+          };
         }
 
         const { ciphertext, senderKeyDistributionMessageKey } =
@@ -528,7 +528,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
         // if there are some participants with whom the session has not been established
         // if there are, we re-send the senderkey
-        if (senderKeyJids.length && !participant?.count) {
+        if (senderKeyJids.length) {
           logger.debug({ senderKeyJids }, "sending new sender key");
 
           const encSenderKeyMsg = encodeWAMessage({
@@ -551,31 +551,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
           participants.push(...result.nodes);
         }
 
-        if (isRetryResend) {
-          const { type, ciphertext: encryptedContent } =
-            await encryptSignalProto(participant!.jid, encodedMsg, authState);
+        binaryNodeContent.push({
+          tag: "enc",
+          attrs: { v: "2", type: "skmsg" },
+          content: ciphertext
+        });
 
-          binaryNodeContent.push({
-            tag: "enc",
-            attrs: {
-              v: "2",
-              type,
-              count: participant!.count.toString()
-            },
-            content: encryptedContent
-          });
-        } else {
-          binaryNodeContent.push({
-            tag: "enc",
-            attrs: { v: "2", type: "skmsg" },
-            content: ciphertext
-          });
-
-          await authState.keys.set({
-            "sender-key-memory": { [jid]: senderKeyMap }
-          });
-        }
-      } else {
+        await authState.keys.set({
+          "sender-key-memory": { [jid]: senderKeyMap }
+        });
+      } else if (!isRetryResend) {
         const { user: meUser } = jidDecode(meId)!;
         const { user: meLidUser } = jidDecode(meLid)!;
 
@@ -586,20 +571,18 @@ export const makeMessagesSocket = (config: SocketConfig) => {
           }
         });
 
-        if (!participant) {
-          devices.push({ user });
-          devices.push({ user: meUser });
+        devices.push({ user });
+        devices.push({ user: meUser });
 
-          if (
-            !(additionalAttributes?.["category"] === "peer" && user === meUser)
-          ) {
-            const additionalDevices = await getUSyncDevices(
-              [meId, jid],
-              !!useUserDevicesCache,
-              true
-            );
-            devices.push(...additionalDevices);
-          }
+        if (
+          !(additionalAttributes?.["category"] === "peer" && user === meUser)
+        ) {
+          const additionalDevices = await getUSyncDevices(
+            [meId, jid],
+            !!useUserDevicesCache,
+            true
+          );
+          devices.push(...additionalDevices);
         }
 
         const allJids: string[] = [];
@@ -649,6 +632,39 @@ export const makeMessagesSocket = (config: SocketConfig) => {
             content: participants
           });
         }
+      }
+
+      if (isRetryResend) {
+        const isParticipantLid = isLidUser(participant!.jid);
+        const isMe = areJidsSameUser(
+          participant!.jid,
+          isParticipantLid ? meLid : meId
+        );
+
+        const encodedMessageToSend = isMe
+          ? encodeWAMessage({
+              deviceSentMessage: {
+                destinationJid,
+                message
+              }
+            })
+          : encodedMsg;
+
+        const { type, ciphertext: encryptedContent } = await encryptSignalProto(
+          participant!.jid,
+          encodedMessageToSend,
+          authState
+        );
+
+        binaryNodeContent.push({
+          tag: "enc",
+          attrs: {
+            v: "2",
+            type,
+            count: participant!.count.toString()
+          },
+          content: encryptedContent
+        });
       }
 
       const stanza: BinaryNode = {

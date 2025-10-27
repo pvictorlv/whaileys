@@ -41,6 +41,7 @@ import {
   getBinaryNodeChild,
   getBinaryNodeChildren,
   isJidGroup,
+  isLidUser,
   isJidUser,
   jidDecode,
   jidEncode,
@@ -50,7 +51,6 @@ import {
 } from "../WABinary";
 import { makeGroupsSocket } from "./groups";
 import { MessageRetryManager } from "../Utils/message-retry-manager";
-import { isLidUser } from "../../lib";
 
 export const makeMessagesSocket = (config: SocketConfig) => {
   const {

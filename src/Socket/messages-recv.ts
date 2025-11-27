@@ -787,7 +787,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
       // Fallback to getMessage if not found in cache
       if (!msg) {
-        msg = await getMessage({ ...key, id });
+        msg = (sentMessagesCache?.get(id) as proto.IMessage | undefined) || (await getMessage({ ...key, id }));
         if (msg) {
           logger.debug({ jid: remoteJid, id }, "found message via getMessage");
           // Also mark as successful if found via getMessage

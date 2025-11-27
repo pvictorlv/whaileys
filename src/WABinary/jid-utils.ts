@@ -15,6 +15,7 @@ export type JidServer =
 export type JidWithDevice = {
   user: string;
   device?: number;
+  isLid?: boolean;
 };
 
 export type FullJid = JidWithDevice & {

@@ -513,10 +513,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
         const senderKeyJids: string[] = [];
         // ensure a connection is established with every device
-        for (const { user, device } of devices) {
+        for (const { user, device, isLid } of devices) {
           const jid = jidEncode(
             user,
-            groupData?.addressingMode === "lid" ? "lid" : "s.whatsapp.net",
+              isLid ? "lid" : "s.whatsapp.net",
             device
           );
           if (!senderKeyMap[jid] && !isRetryResend) {

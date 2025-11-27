@@ -398,7 +398,11 @@ export const extractDeviceJids = (
               (myUser !== user || myDevice !== device) && // either different user or if me user, not this device
               (device === 0 || !!attrs["key-index"]) // ensure that "key-index" is specified for "non-zero" devices, produces a bad req otherwise
             ) {
-              extracted.push({ user, device });
+              extracted.push({
+                user,
+                device,
+                isLid: Boolean(item.attrs?.jid?.endsWith("@lid"))
+              });
             }
           }
         }

@@ -58,6 +58,23 @@ export const decodeMessageStanza = (
     ? stanza.attrs.participant
     : stanza.attrs.participant_lid;
 
+  const isGroup = isJidGroup(stanza.attrs.from);
+
+  const fromJidUser = jidDecode(senderPn)?.user;
+  const fromDevice = jidDecode(stanza.attrs.from)?.device;
+
+  const participantJidUser = jidDecode(participantPn)?.user;
+  const participantDevice = jidDecode(stanza.attrs.participant)?.device;
+
+  const participantFullJid = participantJidUser
+    ? jidEncode(participantJidUser, "s.whatsapp.net", participantDevice)
+    : undefined;
+
+  const fromFullJid =
+    !isGroup && fromJidUser
+      ? jidEncode(fromJidUser, "s.whatsapp.net", fromDevice)
+      : undefined;
+
   const msgId = stanza.attrs.id;
   const from = fromFullJid || stanza.attrs.from;
   const participant = participantFullJid || stanza.attrs.participant;
@@ -131,9 +148,9 @@ export const decodeMessageStanza = (
     senderPn,
     participant,
     participantPn,
-    participantLid
+    participantLid,
+    recipientLid
   };
-
   const fullMessage: WAMessage = {
     key,
     category: stanza.attrs.category,

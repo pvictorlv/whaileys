@@ -1192,7 +1192,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     }
 
     const pdoMessage = {
-      placeholderMessageResendRequest: messageKeys,
+      placeholderMessageResendRequest: [
+        {
+          messageKey
+        }
+      ],
       peerDataOperationRequestType:
         proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
     };

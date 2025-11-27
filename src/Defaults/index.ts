@@ -25,7 +25,6 @@ export const DICT_VERSION = 3;
 export const KEY_BUNDLE_TYPE = Buffer.from([5]);
 export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]); // last is "DICT_VERSION"
 
-
 // ADV signature prefixes (critical for pairing)
 export const WA_ADV_ACCOUNT_SIG_PREFIX = Buffer.from([6, 0]);
 export const WA_ADV_DEVICE_SIG_PREFIX = Buffer.from([6, 1]);

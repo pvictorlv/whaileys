@@ -85,7 +85,6 @@ export const generateLoginNode = (
   const payload: proto.IClientPayload = {
     ...getClientPayload(config),
     passive: true,
-    pull: true,
     username: +user,
     device: device,
     lidDbMigrated: false,

@@ -569,7 +569,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
             }
           }
         }
-      });
+      }, authState.creds.me!.id);
     }
   );
 
@@ -750,7 +750,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
         await authState.keys.set({
           "app-state-sync-version": { [name]: state }
         });
-      });
+      }, authState.creds.me!.id);
     });
 
     if (config.emitOwnEvents) {

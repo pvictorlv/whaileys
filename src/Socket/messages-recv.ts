@@ -1,21 +1,24 @@
 import { Boom } from "@hapi/boom";
 import { proto } from "../../WAProto";
-import { KEY_BUNDLE_TYPE, MIN_PREKEY_COUNT } from "../Defaults";
+import {
+  DEFAULT_CACHE_TTLS,
+  KEY_BUNDLE_TYPE,
+  MIN_PREKEY_COUNT
+} from "../Defaults";
 import {
   MessageReceiptType,
   MessageRelayOptions,
   MessageUserReceipt,
   SocketConfig,
   WACallEvent,
-  WAMessage,
   WAMessageKey,
   WAMessageStubType,
   WAPatchName
 } from "../Types";
 import {
-  Curve,
   aesDecryptCTR,
   aesEncryptGCM,
+  Curve,
   decodeMediaRetryNode,
   decodeMessageStanza,
   delay,
@@ -27,7 +30,9 @@ import {
   getNextPreKeys,
   getStatusFromReceiptType,
   hkdf,
+  jidToSignalProtocolAddress,
   unixTimestampSeconds,
+  validateSession,
   xmppPreKey,
   xmppSignedPreKey
 } from "../Utils";
@@ -41,7 +46,6 @@ import {
   getBinaryNodeChildBuffer,
   getBinaryNodeChildren,
   isJidGroup,
-  isJidMetaAI,
   isJidUser,
   jidDecode,
   jidNormalizedUser,
@@ -50,6 +54,7 @@ import {
 import { extractGroupMetadata } from "./groups";
 import { makeMessagesSocket } from "./messages-send";
 import { randomBytes } from "crypto";
+import NodeCache from "node-cache";
 
 export const makeMessagesRecvSocket = (config: SocketConfig) => {
   const {
@@ -57,7 +62,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     retryRequestDelayMs,
     getMessage,
     sentMessagesCache,
-    shouldIgnoreJid
+    shouldIgnoreJid,
+    enableAutoSessionRecreation
   } = config;
   const sock = makeMessagesSocket(config);
   const {
@@ -74,7 +80,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     relayMessage,
     sendReceipt,
     uploadPreKeys,
-    sendPeerDataOperationMessage
+    sendPeerDataOperationMessage,
+    messageRetryManager
   } = sock;
 
   /** this mutex ensures that each retryRequest will wait for the previous one to finish */
@@ -83,9 +90,75 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
   const msgRetryMap = config.msgRetryCounterMap || {};
   const callOfferData: { [id: string]: WACallEvent } = {};
 
+  const placeholderResendCache = new NodeCache({
+    stdTTL: DEFAULT_CACHE_TTLS.MSG_RETRY, // 1 hour
+    useClones: false
+  });
+
   let sendActiveReceipts = false;
 
-  const sendMessageAck = async ({ tag, attrs, content }: BinaryNode) => {
+  // ACK Burst Control Configuration
+  const ackQueue = new Map<
+    string,
+    {
+      node: BinaryNode;
+      errorCode?: number;
+      timestamp: number;
+    }
+  >();
+  const ackBurstConfig = {
+    maxBurstSize: 15, // Máximo de ACKs por burst
+    burstInterval: 1000, // Intervalo entre bursts (ms)
+    maxQueueSize: 500 // Tamanho máximo da fila
+  };
+  let ackProcessingTimer: NodeJS.Timeout | null = null;
+
+  const processAckQueue = async () => {
+    if (ackQueue.size === 0) {
+      ackProcessingTimer = null;
+      return;
+    }
+
+    const batch: Array<
+      [string, { node: BinaryNode; errorCode?: number; timestamp: number }]
+    > = [];
+    const entries = Array.from(ackQueue.entries());
+
+    // Pegar até maxBurstSize ACKs
+    for (
+      let i = 0;
+      i < Math.min(ackBurstConfig.maxBurstSize, entries.length);
+      i++
+    ) {
+      batch.push(entries[i]);
+    }
+
+    // Processar batch
+    for (const [key, data] of batch) {
+      try {
+        await sendMessageAckImmediate(data.node, data.errorCode);
+        ackQueue.delete(key);
+      } catch (error) {
+        logger.error({ error, key }, "failed to send ack");
+        // Manter na fila para retry
+      }
+    }
+
+    // Agendar próximo processamento
+    if (ackQueue.size > 0) {
+      ackProcessingTimer = setTimeout(
+        processAckQueue,
+        ackBurstConfig.burstInterval
+      );
+    } else {
+      ackProcessingTimer = null;
+    }
+  };
+
+  const sendMessageAckImmediate = async (
+    { tag, attrs, content }: BinaryNode,
+    errorCode?: number
+  ) => {
     const stanza: BinaryNode = {
       tag: "ack",
       attrs: {
@@ -94,6 +167,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         class: tag
       }
     };
+
+    if (!!errorCode) {
+      stanza.attrs.error = errorCode.toString();
+    }
 
     if (!!attrs.participant) {
       stanza.attrs.participant = attrs.participant;
@@ -122,6 +199,38 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     await sendNode(stanza);
   };
 
+  const sendMessageAck = async (
+    { tag, attrs, content }: BinaryNode,
+    errorCode?: number
+  ) => {
+    const node: BinaryNode = { tag, attrs, content };
+    const key = `${attrs.id}_${attrs.from}`;
+
+    // Verificar se a fila está cheia
+    if (ackQueue.size >= ackBurstConfig.maxQueueSize) {
+      logger.warn(
+        { queueSize: ackQueue.size },
+        "ack queue full, sending immediate"
+      );
+      return sendMessageAckImmediate(node, errorCode);
+    }
+
+    // Adicionar à fila
+    ackQueue.set(key, {
+      node,
+      errorCode,
+      timestamp: Date.now()
+    });
+
+    // Iniciar processamento se não estiver rodando
+    if (!ackProcessingTimer) {
+      ackProcessingTimer = setTimeout(
+        processAckQueue,
+        ackBurstConfig.burstInterval
+      );
+    }
+  };
+
   const rejectCall = async (callId: string, callFrom: string) => {
     const stanza: BinaryNode = {
       tag: "call",
@@ -146,25 +255,92 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
   const sendRetryRequest = async (
     node: BinaryNode,
-    forceIncludeKeys = false
+    forceIncludeKeys = false,
+    msgKey: WAMessageKey
   ) => {
     const msgId = node.attrs.id;
+    const fromJid = node.attrs.from!;
 
-    let retryCount = msgRetryMap[msgId] || 0;
-    if (retryCount >= 5) {
-      logger.error({ retryCount, msgId }, "reached retry limit, clearing");
-      delete msgRetryMap[msgId];
-      return;
+    // Use the new retry count for the rest of the logic
+    const key = `${msgId}:${msgKey?.participant}`;
+    let retryCount;
+
+    if (messageRetryManager) {
+      // Check if we've exceeded max retries using the new system
+      if (messageRetryManager.hasExceededMaxRetries(key)) {
+        logger.debug(
+          { msgId },
+          "reached retry limit with new retry manager, clearing"
+        );
+        messageRetryManager.markRetryFailed(key);
+        return;
+      }
+
+      // Increment retry count using new system
+      retryCount = messageRetryManager.incrementRetryCount(key);
+    } else {
+      // Fallback to old system
+      retryCount = msgRetryMap[key] || 0;
+      if (retryCount >= 5) {
+        logger.info({ retryCount, msgId }, "reached retry limit, clearing");
+        delete msgRetryMap[key];
+        return;
+      }
+
+      retryCount += 1;
+      msgRetryMap[key] = retryCount;
     }
-
-    retryCount += 1;
-    msgRetryMap[msgId] = retryCount;
 
     const {
       account,
       signedPreKey,
       signedIdentityKey: identityKey
     } = authState.creds;
+
+    // Check if we should recreate the session
+    let shouldRecreateSession = false;
+    let recreateReason = "";
+
+    if (enableAutoSessionRecreation && messageRetryManager) {
+      try {
+        // Check if we have a session with this JID
+        const sessionId = jidToSignalProtocolAddress(fromJid);
+        const hasSession = await validateSession(fromJid, authState);
+        const result = messageRetryManager.shouldRecreateSession(
+          fromJid,
+          retryCount,
+          hasSession.exists
+        );
+        shouldRecreateSession = result.recreate;
+        recreateReason = result.reason;
+
+        if (shouldRecreateSession) {
+          logger.warn(
+            { fromJid, retryCount, reason: recreateReason },
+            "recreating session for retry"
+          );
+          // Delete existing session to force recreation
+          await authState.keys.set({ session: { [sessionId]: null } });
+          forceIncludeKeys = true;
+        }
+      } catch (error) {
+        logger.warn({ error, fromJid }, "failed to check session recreation");
+      }
+    }
+
+    if (retryCount <= 1) {
+      try {
+        const msgId = await requestPlaceholderResend(msgKey);
+        logger.warn(
+          `sendRetryRequest: requested placeholder resend for message ${msgId} (scheduled)`
+        );
+      } catch (error) {
+        logger.warn(
+          { error, msgId },
+          "failed to send scheduled placeholder request"
+        );
+      }
+    }
 
     const deviceIdentity = encodeSignedDeviceIdentity(account!, true);
     await authState.keys.transaction(async () => {
@@ -201,7 +377,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         receipt.attrs.participant = node.attrs.participant;
       }
 
-      if (retryCount > 1 || forceIncludeKeys) {
+      if (retryCount > 1 || forceIncludeKeys || shouldRecreateSession) {
         const { update, preKeys } = await getNextPreKeys(authState, 1);
 
         const [keyId] = Object.keys(preKeys);
@@ -225,8 +401,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
       await sendNode(receipt);
 
-      logger.debug({ msgAttrs: node.attrs, retryCount }, "sent retry receipt");
-    });
+      logger.info(
+        {
+          msgAttrs: node.attrs,
+          retryCount,
+          shouldRecreateSession,
+          recreateReason
+        },
+        "sent retry receipt"
+      );
+    }, authState?.creds?.me?.id || "sendRetryRequest");
   };
 
   const handleEncryptNotification = async (node: BinaryNode) => {
@@ -579,19 +763,90 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
     ids: string[],
     retryNode: BinaryNode
   ) => {
-    const msgs = await Promise.all(
-      ids.map(
-        id =>
-          (sentMessagesCache?.get(id) as proto.IMessage | undefined) ||
-          getMessage({ ...key, id })
-      )
-    );
     const remoteJid = key.remoteJid!;
     const participant = key.participant || remoteJid;
+
+    const retryCount = +retryNode.attrs.count! || 1;
+
+    // Try to get messages from cache first, then fallback to getMessage
+    const msgs: (proto.IMessage | undefined)[] = [];
+    for (const id of ids) {
+      let msg: proto.IMessage | undefined;
+
+      // Try to get from retry cache first if enabled
+      if (messageRetryManager) {
+        const cachedMsg = messageRetryManager.getRecentMessage(remoteJid, id);
+        if (cachedMsg) {
+          msg = cachedMsg.message;
+          logger.debug({ jid: remoteJid, id }, "found message in retry cache");
+
+          // Mark retry as successful since we found the message
+          messageRetryManager.markRetrySuccess(id);
+        }
+      }
+
+      // Fallback to getMessage if not found in cache
+      if (!msg) {
+        msg = await getMessage({ ...key, id });
+        if (msg) {
+          logger.debug({ jid: remoteJid, id }, "found message via getMessage");
+          // Also mark as successful if found via getMessage
+          if (messageRetryManager) {
+            messageRetryManager.markRetrySuccess(id);
+          }
+        }
+      }
+
+      msgs.push(msg);
+    }
+
     // if it's the primary jid sending the request
     // just re-send the message to everyone
     // prevents the first message decryption failure
     const sendToAll = !jidDecode(participant)?.device;
+
+    // Check if we should recreate session for this retry
+    let shouldRecreateSession = false;
+    let recreateReason = "";
+
+    if (enableAutoSessionRecreation && messageRetryManager) {
+      try {
+        const sessionId = jidToSignalProtocolAddress(participant);
+
+        const hasSession = await validateSession(participant, authState);
+        const result = messageRetryManager.shouldRecreateSession(
+          participant,
+          retryCount,
+          hasSession.exists
+        );
+        shouldRecreateSession = result.recreate;
+        recreateReason = result.reason;
+
+        if (shouldRecreateSession) {
+          logger.info(
+            { participant, retryCount, reason: recreateReason },
+            "recreating session for outgoing retry"
+          );
+          await authState.keys.set({ session: { [sessionId]: null } });
+        }
+      } catch (error) {
+        logger.warn(
+          { error, participant },
+          "failed to check session recreation for outgoing retry"
+        );
+      }
+    }
+
+    await assertSessions([participant], shouldRecreateSession);
+
+    if (isJidGroup(remoteJid)) {
+      await authState.keys.set({ "sender-key-memory": { [remoteJid]: null } });
+    }
+
+    logger.debug(
+      { participant, sendToAll, shouldRecreateSession, recreateReason },
+      "forced new session for retry recp"
+    );
 
     for (let i = 0; i < msgs.length; i++) {
       const msg = msgs[i];
@@ -638,7 +893,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
     if (shouldIgnoreJid(remoteJid) && remoteJid !== "@s.whatsapp.net") {
       logger.debug({ remoteJid }, "ignoring receipt from jid");
-      await sendMessageAck(node);
+      await sendMessageAck(node, 500);
       return;
     }
 
@@ -776,6 +1031,26 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
       return;
     }
 
+    let response: string | undefined;
+
+    const encNode = getBinaryNodeChild(node, "enc");
+    if (getBinaryNodeChild(node, "unavailable") && !encNode) {
+      await sendMessageAck(node);
+      const { key } = decodeMessageStanza(node, authState).fullMessage;
+      response = await requestPlaceholderResend(key);
+      if (response === "RESOLVED") {
+        return;
+      }
+
+      logger.debug(
+        "received unavailable message, acked and requested resend from phone"
+      );
+    } else {
+      if (placeholderResendCache.get(node.attrs.id!)) {
+        placeholderResendCache.del(node.attrs.id!);
+      }
+    }
+
     try {
       const {
         fullMessage: msg,
@@ -783,6 +1058,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
         author,
         decryptionTask
       } = decodeMessageStanza(node, authState);
+
+      if (msg.key?.remoteJid && msg.key?.id && messageRetryManager) {
+        messageRetryManager.addRecentMessage(
+          msg.key.remoteJid,
+          msg.key.id,
+          msg.message!
+        );
+        logger.debug(
+          {
+            jid: msg.key.remoteJid,
+            id: msg.key.id
+          },
+          "Added message to recent cache for retry receipts"
+        );
+      }
+
       await Promise.all([
         processingMutex.mutex(async () => {
           await decryptionTask;
@@ -795,10 +1086,16 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
               { key: msg.key, params: msg.messageStubParameters },
               "failure in decrypting message"
             );
+            if (
+              msg?.messageStubParameters?.[0] ===
+              "Key used already or never filled"
+            ) {
+              return sendMessageAck(node, 487);
+            }
+
             retryMutex.mutex(async () => {
               if (ws.readyState === ws.OPEN) {
-                const encNode = getBinaryNodeChild(node, "enc");
-                await sendRetryRequest(node, !encNode);
+                await sendRetryRequest(node, !encNode, msg.key);
                 if (retryRequestDelayMs) {
                   await delay(retryRequestDelayMs);
                 }
@@ -844,8 +1141,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
           await upsertMessage(msg, node.attrs.offline ? "append" : "notify");
         })
       ]);
-    } finally {
-      await sendMessageAck(node);
+    } catch (error) {
+      logger.error({ error, node }, "failed to process message");
     }
   };
 
@@ -874,15 +1171,41 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
   };
 
   const requestPlaceholderResend = async (
-    messageKeys: { messageKey: WAMessageKey }[]
-  ): Promise<string> => {
-    if (!authState.creds.me?.id) throw new Boom("Not authenticated");
+    messageKey: WAMessageKey
+  ): Promise<string | undefined> => {
+    if (!authState.creds.me?.id) {
+      throw new Boom("Not authenticated");
+    }
+
+    if (placeholderResendCache.get(messageKey?.id!)) {
+      logger.debug({ messageKey }, "already requested resend");
+      return;
+    } else {
+      placeholderResendCache.set(messageKey?.id!, true);
+    }
+
+    await delay(5000);
+
+    if (!placeholderResendCache.get(messageKey?.id!)) {
+      logger.debug({ messageKey }, "message received while resend requested");
+      return "RESOLVED";
+    }
 
     const pdoMessage = {
       placeholderMessageResendRequest: messageKeys,
       peerDataOperationRequestType:
         proto.Message.PeerDataOperationRequestType.PLACEHOLDER_MESSAGE_RESEND
     };
+
+    setTimeout(() => {
+      if (placeholderResendCache.get(messageKey?.id!)) {
+        logger.debug(
+          { messageKey },
+          "PDO message without response after 15 seconds. Phone possibly offline"
+        );
+        placeholderResendCache.del(messageKey?.id!);
+      }
+    }, 15_000);
 
     return sendPeerDataOperationMessage(pdoMessage);
   };

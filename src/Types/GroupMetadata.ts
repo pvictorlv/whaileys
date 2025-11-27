@@ -30,6 +30,7 @@ export interface GroupMetadata {
   isCommunity?: boolean;
   /** is this the announce of a community */
   isCommunityAnnounce?: boolean;
+
   /** is set when the group only allows admins to change group settings */
   restrict?: boolean;
   /** is set when the group only allows admins to write messages */

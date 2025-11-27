@@ -218,7 +218,7 @@ const processMessage = async (
               { newAppStateSyncKeyId, newKeys },
               "injecting new app state sync keys"
             );
-          });
+          }, meId || "app-state-sync");
 
           ev.emit("creds.update", { myAppStateKeyId: newAppStateSyncKeyId });
         } else {
@@ -282,6 +282,18 @@ const processMessage = async (
 
         ev.emit("messages.pdo-response", {
           messages: responseMessages as WAMessage[]
+        });
+
+        break;
+      case proto.Message.ProtocolMessage.Type.SHARE_PHONE_NUMBER:
+        ev.emit("chats.phoneNumberShare", {
+          lid: message.key.senderLid!,
+          jid: message.key.senderPn!
+        });
+
+        ev.emit("contacts.phone-number-share", {
+          lid: message.key.senderLid!,
+          jid: message.key.senderPn!
         });
 
         break;

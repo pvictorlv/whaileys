@@ -13,7 +13,7 @@ export const DEF_TAG_PREFIX = "TAG:";
 export const PHONE_CONNECTION_CB = "CB:Pong";
 
 export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60;
-
+export const MAX_MESSAGE_RETRY_COUNT = 5;
 export const DEFAULT_CACHE_TTLS = {
   SIGNAL_STORE: 5 * 60, // 5 minutes
   GROUP_METADATA: 15 * 60, // 15 minutes
@@ -24,10 +24,14 @@ export const NOISE_MODE = "Noise_XX_25519_AESGCM_SHA256\0\0\0\0";
 export const DICT_VERSION = 3;
 export const KEY_BUNDLE_TYPE = Buffer.from([5]);
 export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]); // last is "DICT_VERSION"
+
+
+// ADV signature prefixes (critical for pairing)
 export const WA_ADV_ACCOUNT_SIG_PREFIX = Buffer.from([6, 0]);
 export const WA_ADV_DEVICE_SIG_PREFIX = Buffer.from([6, 1]);
 export const WA_ADV_HOSTED_ACCOUNT_SIG_PREFIX = Buffer.from([6, 5]);
 export const WA_ADV_HOSTED_DEVICE_SIG_PREFIX = Buffer.from([6, 6]);
+
 /** from: https://stackoverflow.com/questions/3809401/what-is-a-good-regular-expression-to-match-a-url */
 export const URL_REGEX =
   /[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&//=]*)?/gi;
@@ -38,18 +42,18 @@ export const WA_CERT_DETAILS = {
 };
 
 export const PROCESSABLE_HISTORY_TYPES = [
-  proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
-  proto.HistorySync.HistorySyncType.PUSH_NAME,
-  proto.HistorySync.HistorySyncType.RECENT,
-  proto.HistorySync.HistorySyncType.FULL,
-  proto.HistorySync.HistorySyncType.ON_DEMAND,
-  proto.HistorySync.HistorySyncType.NON_BLOCKING_DATA,
-  proto.HistorySync.HistorySyncType.INITIAL_STATUS_V3
+  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_BOOTSTRAP,
+  proto.Message.HistorySyncNotification.HistorySyncType.PUSH_NAME,
+  proto.Message.HistorySyncNotification.HistorySyncType.RECENT,
+  proto.Message.HistorySyncNotification.HistorySyncType.FULL,
+  proto.Message.HistorySyncNotification.HistorySyncType.ON_DEMAND,
+  proto.Message.HistorySyncNotification.HistorySyncType.NON_BLOCKING_DATA,
+  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_STATUS_V3
 ];
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
   version: version as any,
-  browser: Browsers.baileys("Chrome"),
+  browser: Browsers.macOS("Chrome"),
   waWebSocketUrl: "wss://web.whatsapp.com/ws/chat",
   connectTimeoutMs: 20_000,
   keepAliveIntervalMs: 15_000,
@@ -68,6 +72,8 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
   linkPreviewImageThumbnailWidth: 192,
   transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
   generateHighQualityLinkPreview: false,
+  enableAutoSessionRecreation: true,
+  enableRecentMessageCache: true,
   options: {},
   getMessage: async () => undefined,
   groupMetadataCache: new NodeCache({
@@ -115,4 +121,4 @@ export const MEDIA_KEYS = Object.keys(MEDIA_PATH_MAP) as MediaType[];
 
 export const MIN_PREKEY_COUNT = 5;
 
-export const INITIAL_PREKEY_COUNT = 30;
+export const INITIAL_PREKEY_COUNT = 812;

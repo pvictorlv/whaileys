@@ -34,6 +34,8 @@ export type BaileysEventMap = {
   "chats.update": ChatUpdate[];
   /** @deprecated Use contacts.phone-number-share instead */
   "chats.phoneNumberShare": { lid: string; jid: string };
+  /** contact decided to share his phone number that was hidden */
+  "contacts.phone-number-share": { lid: string; jid: string };
   /** delete chats with given ID */
   "chats.delete": string[];
   /** presence of contact in a chat updated */

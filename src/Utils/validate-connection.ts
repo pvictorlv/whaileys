@@ -42,7 +42,7 @@ const getUserAgent = ({
     device: "Desktop",
     osBuildNumber: osVersion,
     localeLanguageIso6391: "en",
-    localeCountryIso31661Alpha2: "US"
+    localeCountryIso31661Alpha2: "GB"
   };
 };
 
@@ -55,7 +55,11 @@ const getWebInfo = (
   config: ClientPayloadConfig
 ): proto.ClientPayload.IWebInfo => {
   let webSubPlatform = proto.ClientPayload.WebInfo.WebSubPlatform.WEB_BROWSER;
-  if (config.syncFullHistory && PLATFORM_MAP[config.browser[0]]) {
+  if (
+    config.syncFullHistory &&
+    PLATFORM_MAP[config.browser[0]] &&
+    config.browser[1] == "Desktop"
+  ) {
     webSubPlatform = PLATFORM_MAP[config.browser[0]];
   }
 
@@ -81,6 +85,7 @@ export const generateLoginNode = (
   const payload: proto.IClientPayload = {
     ...getClientPayload(config),
     passive: true,
+    pull: true,
     username: +user,
     device: device,
     lidDbMigrated: false,

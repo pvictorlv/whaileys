@@ -1,7 +1,7 @@
 import { Boom } from "@hapi/boom";
 import NodeCache from "node-cache";
 import { proto } from "../../WAProto";
-import { WA_DEFAULT_EPHEMERAL } from "../Defaults";
+import { MAX_MESSAGE_RETRY_COUNT, WA_DEFAULT_EPHEMERAL } from "../Defaults";
 import {
   AnyMessageContent,
   GroupMetadata,
@@ -42,6 +42,7 @@ import {
   getBinaryNodeChildren,
   isJidGroup,
   isJidStatusBroadcast,
+  isLidUser,
   isJidUser,
   isLidUser,
   jidDecode,
@@ -51,12 +52,14 @@ import {
   S_WHATSAPP_NET
 } from "../WABinary";
 import { makeGroupsSocket } from "./groups";
+import { MessageRetryManager } from "../Utils/message-retry-manager";
 
 export const makeMessagesSocket = (config: SocketConfig) => {
   const {
     logger,
     linkPreviewImageThumbnailWidth,
-    generateHighQualityLinkPreview
+    generateHighQualityLinkPreview,
+    enableRecentMessageCache
   } = config;
   const sock = makeGroupsSocket(config);
   const {
@@ -77,6 +80,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
       stdTTL: 300, // 5 minutes
       useClones: false
     });
+
+  // Initialize message retry manager if enabled
+  const messageRetryManager = enableRecentMessageCache
+    ? new MessageRetryManager(logger, MAX_MESSAGE_RETRY_COUNT)
+    : null;
 
   const groupMetadataCache = config.groupMetadataCache;
 
@@ -420,12 +428,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
     }: MessageRelayOptions
   ) => {
     const meId = authState.creds.me!.id;
+
+    const meLid = authState.creds.me!.lid;
     const isRetryResend = Boolean(participant?.jid);
 
     let shouldIncludeDeviceIdentity = isRetryResend;
 
     const isGroup = isJidGroup(jid);
     const isStatus = isJidStatusBroadcast(jid);
+
     const isGroupOrStatus = isGroup || isStatus;
 
     msgId = msgId || generateMessageIDV2(sock.user?.id);
@@ -506,13 +517,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
         const senderKeyJids: string[] = [];
         // ensure a connection is established with every device
         for (const { user, device, isLid } of devices) {
-          const encodedLid = jidEncode(
+          const jid = jidEncode(
             user,
-            isLid ? "lid" : "s.whatsapp.net",
+              isLid ? "lid" : "s.whatsapp.net",
             device
           );
-          if (!senderKeyMap[encodedLid]) {
-            senderKeyJids.push(encodedLid);
+          if (!senderKeyMap[jid] && !isRetryResend) {
+            senderKeyJids.push(jid);
             // store that this person has had the sender keys sent to them
             senderKeyMap[encodedLid] = true;
           }
@@ -553,8 +564,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
           "sender-key-memory": { [jid]: senderKeyMap }
         });
       } else if (!isRetryResend) {
-        const { user } = jidDecode(destinationJid)!;
-        const meUser = jidDecode(meId)?.user;
+        const { user: meUser } = jidDecode(meId)!;
+        const { user: meLidUser } = jidDecode(meLid)!;
 
         const encodedMeMsg = encodeWAMessage({
           deviceSentMessage: {
@@ -563,13 +574,16 @@ export const makeMessagesSocket = (config: SocketConfig) => {
           }
         });
 
-        if (additionalAttributes?.["category"] === "peer" && user === meUser) {
-          devices.push({ user: meUser });
-        } else {
+        devices.push({ user });
+        devices.push({ user: meUser });
+
+        if (
+          !(additionalAttributes?.["category"] === "peer" && user === meUser)
+        ) {
           const additionalDevices = await getUSyncDevices(
             [meId, jid],
             !!useUserDevicesCache,
-            false
+            true
           );
           devices.push(...additionalDevices);
         }
@@ -628,32 +642,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
       }
 
       if (isRetryResend) {
-        // when the retry request is not for a group
-        // only send to the specific device that asked for a retry
-        // otherwise the message is sent out to every device that should be a recipient
-        if (!isGroup && !isStatus) {
-          additionalAttributes = {
-            ...additionalAttributes,
-            device_fanout: "false"
-          };
-        }
-
-        await assertSessions([participant!.jid], true);
-
-        if (isGroup) {
-          const result = await authState.keys.get("sender-key-memory", [
-            destinationJid
-          ]);
-
-          const groupSenderKeyMap = result[destinationJid] || {};
-          groupSenderKeyMap[participant!.jid] = false;
-
-          await authState.keys.set({
-            "sender-key-memory": { [destinationJid]: groupSenderKeyMap }
-          });
-        }
-
-        const isMe = areJidsSameUser(participant!.jid, meId);
+        const isParticipantLid = isLidUser(participant!.jid);
+        const isMe = areJidsSameUser(
+          participant!.jid,
+          isParticipantLid ? meLid : meId
+        );
 
         const encodedMessageToSend = isMe
           ? encodeWAMessage({
@@ -753,7 +746,12 @@ export const makeMessagesSocket = (config: SocketConfig) => {
       );
 
       await sendNode(stanza);
-    });
+
+      // Add message to retry cache if enabled
+      if (messageRetryManager && !participant) {
+        messageRetryManager.addRecentMessage(destinationJid, msgId!, message);
+      }
+    }, meId);
 
     return msgId;
   };
@@ -794,6 +792,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
     ...sock,
     getPrivacyTokens,
     getUSyncDevices,
+    messageRetryManager,
     assertSessions,
     relayMessage,
     sendReceipt,

@@ -16,6 +16,9 @@ export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60;
 export const MAX_MESSAGE_RETRY_COUNT = 5;
 export const DEFAULT_CACHE_TTLS = {
   SIGNAL_STORE: 5 * 60, // 5 minutes
+  MSG_RETRY: 60 * 60, // 1 hour
+  CALL_OFFER: 5 * 60, // 5 minutes
+  USER_DEVICES: 5 * 60, // 5 minutes
   GROUP_METADATA: 15 * 60, // 15 minutes
   SENT_MESSAGES: 20 // 20 seconds
 };
@@ -41,13 +44,13 @@ export const WA_CERT_DETAILS = {
 };
 
 export const PROCESSABLE_HISTORY_TYPES = [
-  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_BOOTSTRAP,
-  proto.Message.HistorySyncNotification.HistorySyncType.PUSH_NAME,
-  proto.Message.HistorySyncNotification.HistorySyncType.RECENT,
-  proto.Message.HistorySyncNotification.HistorySyncType.FULL,
-  proto.Message.HistorySyncNotification.HistorySyncType.ON_DEMAND,
-  proto.Message.HistorySyncNotification.HistorySyncType.NON_BLOCKING_DATA,
-  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_STATUS_V3
+  proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+  proto.HistorySync.HistorySyncType.PUSH_NAME,
+  proto.HistorySync.HistorySyncType.RECENT,
+  proto.HistorySync.HistorySyncType.FULL,
+  proto.HistorySync.HistorySyncType.ON_DEMAND,
+  proto.HistorySync.HistorySyncType.NON_BLOCKING_DATA,
+  proto.HistorySync.HistorySyncType.INITIAL_STATUS_V3
 ];
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {

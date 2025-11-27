@@ -119,11 +119,14 @@ export interface BaileysEventEmitter {
     event: T,
     listener: (arg: BaileysEventMap[T]) => void
   ): void;
+
   off<T extends keyof BaileysEventMap>(
     event: T,
     listener: (arg: BaileysEventMap[T]) => void
   ): void;
+
   removeAllListeners<T extends keyof BaileysEventMap>(event: T): void;
+
   emit<T extends keyof BaileysEventMap>(
     event: T,
     arg: BaileysEventMap[T]

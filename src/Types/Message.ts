@@ -22,6 +22,7 @@ export type WAMessageKey = proto.IMessageKey & {
   senderPn?: string;
   participantLid?: string;
   participantPn?: string;
+  recipientLid?: string;
   isViewOnce?: boolean;
 };
 export type WATextMessage = proto.Message.IExtendedTextMessage;
@@ -82,6 +83,10 @@ type Mentionable = {
   /** list of jids that are mentioned in the accompanying text */
   mentions?: string[];
 };
+type Contextable = {
+  /** add contextInfo to the message */
+  contextInfo?: proto.IContextInfo;
+};
 type ViewOnce = {
   viewOnce?: boolean;
 };
@@ -124,6 +129,7 @@ export type AnyMediaMessageContent = (
       caption?: string;
       jpegThumbnail?: string;
     } & Mentionable &
+      Contextable &
       Buttonable &
       Templatable &
       WithDimensions)
@@ -133,6 +139,7 @@ export type AnyMediaMessageContent = (
       gifPlayback?: boolean;
       jpegThumbnail?: string;
     } & Mentionable &
+      Contextable &
       Buttonable &
       Templatable &
       WithDimensions)
@@ -142,6 +149,8 @@ export type AnyMediaMessageContent = (
       ptt?: boolean;
       /** optionally tell the duration of the audio */
       seconds?: number;
+      /** waveform data as generated for voice notes, pass null to disable */
+      waveform?: Uint8Array | null;
     }
   | ({
       sticker: WAMediaUpload;
@@ -152,6 +161,7 @@ export type AnyMediaMessageContent = (
       mimetype: string;
       fileName?: string;
     } & Buttonable &
+      Contextable &
       Templatable)
 ) & { mimetype?: string } & Editable;
 
@@ -168,11 +178,16 @@ export type WASendableProduct = Omit<
   productImage: WAMediaUpload;
 };
 
+export type InteractiveMessageContent = {
+  interactiveMessage: proto.Message.IInteractiveMessage;
+};
+
 export type AnyRegularMessageContent = (
   | ({
       text: string;
       linkPreview?: WAUrlInfo | null;
     } & Mentionable &
+      Contextable &
       Buttonable &
       Templatable &
       Listable &
@@ -198,6 +213,7 @@ export type AnyRegularMessageContent = (
       body?: string;
       footer?: string;
     }
+  | InteractiveMessageContent
   | RequestPhoneNumber
 ) &
   ViewOnce;

@@ -106,7 +106,12 @@ export const downloadAndProcessHistorySyncNotification = async (
   msg: proto.Message.IHistorySyncNotification,
   options: AxiosRequestConfig<any>
 ) => {
-  const historyMsg = await downloadHistory(msg, options);
+  const historyMsg = msg.initialHistBootstrapInlinePayload
+    ? proto.HistorySync.decode(
+        await inflatePromise(msg.initialHistBootstrapInlinePayload)
+      )
+    : await downloadHistory(msg, options);
+
   return processHistoryMessage(historyMsg);
 };
 

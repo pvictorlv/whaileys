@@ -19,14 +19,14 @@ export const DEFAULT_CACHE_TTLS = {
   MSG_RETRY: 60 * 60, // 1 hour
   CALL_OFFER: 5 * 60, // 5 minutes
   USER_DEVICES: 5 * 60, // 5 minutes
-  GROUP_METADATA: 15 * 60 // 15 minutes
+  GROUP_METADATA: 15 * 60, // 15 minutes
+  SENT_MESSAGES: 20 // 20 seconds
 };
 
 export const NOISE_MODE = "Noise_XX_25519_AESGCM_SHA256\0\0\0\0";
 export const DICT_VERSION = 3;
 export const KEY_BUNDLE_TYPE = Buffer.from([5]);
 export const NOISE_WA_HEADER = Buffer.from([87, 65, 6, DICT_VERSION]); // last is "DICT_VERSION"
-
 
 // ADV signature prefixes (critical for pairing)
 export const WA_ADV_ACCOUNT_SIG_PREFIX = Buffer.from([6, 0]);
@@ -44,13 +44,13 @@ export const WA_CERT_DETAILS = {
 };
 
 export const PROCESSABLE_HISTORY_TYPES = [
-  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_BOOTSTRAP,
-  proto.Message.HistorySyncNotification.HistorySyncType.PUSH_NAME,
-  proto.Message.HistorySyncNotification.HistorySyncType.RECENT,
-  proto.Message.HistorySyncNotification.HistorySyncType.FULL,
-  proto.Message.HistorySyncNotification.HistorySyncType.ON_DEMAND,
-  proto.Message.HistorySyncNotification.HistorySyncType.NON_BLOCKING_DATA,
-  proto.Message.HistorySyncNotification.HistorySyncType.INITIAL_STATUS_V3
+  proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+  proto.HistorySync.HistorySyncType.PUSH_NAME,
+  proto.HistorySync.HistorySyncType.RECENT,
+  proto.HistorySync.HistorySyncType.FULL,
+  proto.HistorySync.HistorySyncType.ON_DEMAND,
+  proto.HistorySync.HistorySyncType.NON_BLOCKING_DATA,
+  proto.HistorySync.HistorySyncType.INITIAL_STATUS_V3
 ];
 
 export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
@@ -80,6 +80,10 @@ export const DEFAULT_CONNECTION_CONFIG: SocketConfig = {
   getMessage: async () => undefined,
   groupMetadataCache: new NodeCache({
     stdTTL: DEFAULT_CACHE_TTLS.GROUP_METADATA,
+    useClones: false
+  }),
+  sentMessagesCache: new NodeCache({
+    stdTTL: DEFAULT_CACHE_TTLS.SENT_MESSAGES,
     useClones: false
   })
 };

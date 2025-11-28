@@ -36,6 +36,7 @@ import {
   encryptedStream,
   generateThumbnail,
   getAudioDuration,
+  getAudioWaveform,
   MediaDownloadOptions
 } from "./messages-media";
 import { sha256 } from "./crypto";
@@ -51,6 +52,7 @@ type MediaUploadData = {
   mimetype?: string;
   width?: number;
   height?: number;
+  waveform?: Uint8Array | null;
 };
 
 const MIMETYPE_MAP: { [T in MediaType]?: string } = {
@@ -153,6 +155,10 @@ export const prepareWAMessageMedia = async (
 
   const requiresDurationComputation =
     mediaType === "audio" && typeof uploadData.seconds === "undefined";
+  const requiresWaveformProcessing =
+    mediaType === "audio" &&
+    uploadData.ptt === true &&
+    uploadData.waveform === undefined;
 
   const {
     mediaKey,
@@ -164,7 +170,8 @@ export const prepareWAMessageMedia = async (
   } = await encryptedStream(
     uploadData.media,
     options.mediaTypeOverride || mediaType,
-    requiresDurationComputation
+    requiresDurationComputation || requiresWaveformProcessing,
+    options.logger
   );
   // url safe Base64 encode the SHA256 hash of the body
   const fileEncSha256B64 = fileEncSha256.toString("base64");
@@ -179,6 +186,13 @@ export const prepareWAMessageMedia = async (
   if (requiresDurationComputation && originalFilePath) {
     uploadData.seconds = await getAudioDuration(originalFilePath);
     logger?.debug("computed audio duration");
+  }
+
+  if (requiresWaveformProcessing && originalFilePath) {
+    uploadData.waveform = await getAudioWaveform(originalFilePath, logger);
+    if (uploadData.waveform) {
+      logger?.debug("computed audio waveform");
+    }
   }
 
   await fs
@@ -366,6 +380,8 @@ export const generateWAMessageContent = async (
         };
         break;
     }
+  } else if ("interactiveMessage" in message) {
+    m.interactiveMessage = message.interactiveMessage;
   } else if ("product" in message) {
     const { imageMessage } = await prepareWAMessageMedia(
       { image: message.product.productImage },
@@ -926,14 +942,14 @@ const generateContextInfo = () => {
 export const patchMessageForMdIfRequired = (message: proto.IMessage) => {
   const requiresPatch = !!(
     message.buttonsMessage ||
-    // || message.templateMessage
-    message.listMessage
+    message.listMessage ||
+    message.interactiveMessage
   );
+
   if (requiresPatch) {
     message = {
-      viewOnceMessage: {
+      documentWithCaptionMessage: {
         message: {
-          messageContextInfo: generateContextInfo(),
           ...message
         }
       }

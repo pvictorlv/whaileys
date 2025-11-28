@@ -549,9 +549,9 @@ export const makeSocket = ({
 
       const diff = Date.now() - lastDateRecv.getTime();
       /*
-                                  check if it's been a suspicious amount of time since the server responded with our last seen
-                                  it could be that the network is down
-                              */
+                                        check if it's been a suspicious amount of time since the server responded with our last seen
+                                        it could be that the network is down
+                                    */
       if (diff > keepAliveIntervalMs + 5000) {
         end(
           new Boom("Connection was lost", {
@@ -619,8 +619,17 @@ export const makeSocket = ({
     );
   };
 
-  const requestPairingCode = async (phoneNumber: string): Promise<string> => {
-    authState.creds.pairingCode = bytesToCrockford(randomBytes(5));
+  const requestPairingCode = async (
+    phoneNumber: string,
+    customPairingCode?: string
+  ): Promise<string> => {
+    const pairingCode = customPairingCode ?? bytesToCrockford(randomBytes(5));
+
+    if (customPairingCode && customPairingCode?.length !== 8) {
+      throw new Boom("Custom pairing code must be exactly 8 chars");
+    }
+
+    authState.creds.pairingCode = pairingCode;
     authState.creds.me = {
       id: jidEncode(phoneNumber, "s.whatsapp.net"),
       name: "~"

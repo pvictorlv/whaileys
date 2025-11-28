@@ -32,9 +32,8 @@ export type BaileysEventMap = {
   "chats.upsert": Chat[];
   /** update the given chats */
   "chats.update": ChatUpdate[];
+  /** @deprecated Use contacts.phone-number-share instead */
   "chats.phoneNumberShare": { lid: string; jid: string };
-  /** contact decided to share his phone number that was hidden */
-  "contacts.phone-number-share": { lid: string; jid: string };
   /** delete chats with given ID */
   "chats.delete": string[];
   /** presence of contact in a chat updated */
@@ -45,7 +44,10 @@ export type BaileysEventMap = {
 
   "contacts.upsert": Contact[];
   "contacts.update": Partial<Contact>[];
-
+  /** contact decided to share his phone number that was hidden */
+  "contacts.phone-number-share": { lid: string; jid: string };
+  /** received a response of PDO requested messages */
+  "messages.pdo-response": { messages: WAMessage[] };
   "messages.delete": { keys: WAMessageKey[] } | { jid: string; all: true };
   "messages.update": WAMessageUpdate[];
   "messages.media-update": {
@@ -60,7 +62,6 @@ export type BaileysEventMap = {
   "messages.upsert": {
     messages: WAMessage[];
     type: MessageUpsertType;
-    isPlaceholderMessageResendResponse?: boolean;
   };
   /** message was reacted to. If reaction was removed -- then "reaction.text" will be falsey */
   "messages.reaction": { key: WAMessageKey; reaction: proto.IReaction }[];
@@ -116,11 +117,14 @@ export interface BaileysEventEmitter {
     event: T,
     listener: (arg: BaileysEventMap[T]) => void
   ): void;
+
   off<T extends keyof BaileysEventMap>(
     event: T,
     listener: (arg: BaileysEventMap[T]) => void
   ): void;
+
   removeAllListeners<T extends keyof BaileysEventMap>(event: T): void;
+
   emit<T extends keyof BaileysEventMap>(
     event: T,
     arg: BaileysEventMap[T]

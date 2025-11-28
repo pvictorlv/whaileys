@@ -53,8 +53,10 @@ export type SocketConfig = {
   transactionOpts: TransactionCapabilityOptions;
   /** provide a cache to store a user's device list */
   userDevicesCache?: NodeCache;
-  /** provide a cache to store metadata, used to prevent redundant requests to WA & speed up msg sending */
+  /** provide a cache to store metadata, used to prevent redundant requests to WA & speed up msg sending. Pass undefined to disable */
   groupMetadataCache?: NodeCache;
+  /** provide a cache to store recently sent messages, used to resend the message when someone fails to decrypt it (waiting for this message problem). Default cache store message per 20 seconds. Pass undefined to disable*/
+  sentMessagesCache?: NodeCache;
   /** marks the client as online whenever the socket successfully connects */
   markOnlineOnConnect: boolean;
   /**

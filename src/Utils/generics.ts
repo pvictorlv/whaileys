@@ -302,6 +302,15 @@ export const fetchLatestBaileysVersion = async (
   }
 };
 
+const WA_WEB_SW_URL = "https://web.whatsapp.com/sw.js";
+const CLIENT_REVISION_REGEX = /\\"client_revision\\":\s*(\d+)/;
+
+type FetchWaWebVersionResult = {
+  version: WAVersion;
+  isLatest: boolean;
+  error?: unknown;
+};
+
 /**
  * A utility that fetches the latest web version of whatsapp.
  * Use to ensure your WA connection is always on the latest version

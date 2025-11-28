@@ -818,6 +818,23 @@ export const makeChatsSocket = (config: SocketConfig) => {
   };
 
   /**
+   * add or edit contacts in the device's address book via the app's status
+   */
+  const addOrEditContact = (
+    jid: string,
+    contact: proto.SyncActionValue.IContactAction
+  ) => {
+    return chatModify({ contact }, jid);
+  };
+
+  /**
+   * remove contact from device address book via app status.
+   */
+  const removeContact = (jid: string) => {
+    return chatModify({ contact: null }, jid);
+  };
+
+  /**
    * queries need to be fired on connection open
    * help ensure parity with WA Web
    * */
@@ -858,9 +875,12 @@ export const makeChatsSocket = (config: SocketConfig) => {
       }
 
       const historyMsg = getHistoryMsg(msg.message!);
+
       const shouldProcessHistoryMsg = historyMsg
         ? shouldSyncHistoryMessage(historyMsg) &&
-          PROCESSABLE_HISTORY_TYPES.includes(historyMsg.syncType!)
+          PROCESSABLE_HISTORY_TYPES.includes(
+            historyMsg.syncType! as proto.HistorySync.HistorySyncType
+          )
         : false;
       // we should have app state keys before we process any history
       if (shouldProcessHistoryMsg) {
@@ -960,6 +980,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
     updateBlockStatus,
     getBusinessProfile,
     resyncAppState,
+    addOrEditContact,
+    removeContact,
     chatModify
   };
 };

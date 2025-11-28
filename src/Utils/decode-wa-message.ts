@@ -10,7 +10,9 @@ import {
   isJidNewsletter,
   isJidStatusBroadcast,
   isJidUser,
-  isLidUser
+  isLidUser,
+  jidDecode,
+  jidEncode
 } from "../WABinary";
 import { unpadRandomMax16 } from "./generics";
 import {
@@ -38,10 +40,13 @@ export const decodeMessageStanza = (
   let chatId: string;
   let author: string;
 
-  const senderPn = isJidUser(stanza.attrs.from)
+  const meUser = jidDecode(auth.creds.me!.id)?.user!;
+
+  const senderPn = stanza.attrs.sender_lid
     ? stanza.attrs.from
     : stanza.attrs.sender_pn;
-  const senderLid = isLidUser(stanza.attrs.from)
+
+  const senderLid = stanza.attrs.sender_pn
     ? stanza.attrs.from
     : stanza.attrs.sender_lid;
 
@@ -53,10 +58,30 @@ export const decodeMessageStanza = (
     ? stanza.attrs.participant
     : stanza.attrs.participant_lid;
 
+  const isGroup = isJidGroup(stanza.attrs.from);
+
+  const fromJidUser = jidDecode(senderPn)?.user;
+  const fromDevice = jidDecode(stanza.attrs.from)?.device;
+
+  const participantJidUser = jidDecode(participantPn)?.user;
+  const participantDevice = jidDecode(stanza.attrs.participant)?.device;
+
+  const participantFullJid = participantJidUser
+    ? jidEncode(participantJidUser, "s.whatsapp.net", participantDevice)
+    : undefined;
+
+  const fromFullJid =
+    !isGroup && fromJidUser
+      ? jidEncode(fromJidUser, "s.whatsapp.net", fromDevice)
+      : undefined;
+
   const msgId = stanza.attrs.id;
-  const from = senderPn || stanza.attrs.from;
-  const participant: string | undefined = stanza.attrs.participant;
-  const recipient: string | undefined = stanza.attrs.recipient;
+  const from = fromFullJid || stanza.attrs.from;
+  const participant = participantFullJid || stanza.attrs.participant;
+  const recipient = stanza.attrs.peer_recipient_pn || stanza.attrs.recipient;
+  const recipientLid = isLidUser(stanza.attrs.recipient)
+    ? stanza.attrs.recipient
+    : stanza.attrs.peer_recipient_lid;
 
   const isMe = (jid: string) => areJidsSameUser(jid, auth.creds.me!.id);
   const isMeLid = (jid: string) => areJidsSameUser(jid, auth.creds.me!.lid);
@@ -82,14 +107,16 @@ export const decodeMessageStanza = (
     }
 
     msgType = "group";
-    author = participant;
     chatId = from;
+    author = isMeLid(participant)
+      ? jidEncode(meUser, "s.whatsapp.net", participantDevice)
+      : participant;
   } else if (isJidBroadcast(from)) {
     if (!participant) {
       throw new Boom("No participant in group message");
     }
 
-    const isParticipantMe = isMe(participant);
+    const isParticipantMe = isMe(participant) || isMeLid(participant);
     if (isJidStatusBroadcast(from)) {
       msgType = isParticipantMe ? "direct_peer_status" : "other_status";
     } else {
@@ -121,9 +148,9 @@ export const decodeMessageStanza = (
     senderPn,
     participant,
     participantPn,
-    participantLid
+    participantLid,
+    recipientLid
   };
-
   const fullMessage: WAMessage = {
     key,
     category: stanza.attrs.category,

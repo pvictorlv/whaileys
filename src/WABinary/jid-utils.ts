@@ -1,3 +1,5 @@
+import logger from "../Utils/logger";
+
 export const S_WHATSAPP_NET = "@s.whatsapp.net";
 export const OFFICIAL_BIZ_JID = "16505361212@c.us";
 export const SERVER_JID = "server@c.us";
@@ -37,6 +39,7 @@ export const jidEncode = (
 export const jidDecode = (jid: string | undefined): FullJid | undefined => {
   const sepIdx = typeof jid === "string" ? jid.indexOf("@") : -1;
   if (sepIdx < 0) {
+    logger.warn(`jidDecode called on invalid jid: ${jid}`);
     return undefined;
   }
 
